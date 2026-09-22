@@ -402,30 +402,6 @@ if (!SHEET_ONLY) {
 }
 products.refreshFromGoogleSheet().catch(() => {});
 
-app.get("/diag", async (req, res) => {
-  const net = require("./net");
-  const out = {};
-  const urls = [
-    "https://api.github.com",
-    "https://example.com",
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(
-      process.env.SHEET_WEBAPP_URL + "?status=1&secret=" + process.env.SHEET_SECRET
-    )}`,
-    process.env.SHEET_WEBAPP_URL + "?status=1&secret=" + process.env.SHEET_SECRET,
-    process.env.SHEET_WEBAPP_URL + "?products=1&secret=" + process.env.SHEET_SECRET,
-    process.env.SHEET_WEBAPP_URL + "?orders=1&secret=" + process.env.SHEET_SECRET,
-  ];
-  for (const u of urls) {
-    try {
-      const x = await net.request(u);
-      out[u] = { code: x.status, len: x.text.length, head: x.text.slice(0, 40) };
-    } catch (e) {
-      out[u] = { err: e.message };
-    }
-  }
-  res.json(out);
-});
-
 app.use((req, res, next) => {
   res.status(200).send("Zipra webhook endpoint OK");
 });
