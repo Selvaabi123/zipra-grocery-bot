@@ -46,7 +46,13 @@ function request(url, { method = "GET", body, maxRedirects = 5, timeout = 30000,
     let lastErr;
     for (let i = 0; i < retries; i++) {
       try {
-        return await attempt();
+        const res = await attempt();
+        if (res.status >= 400) {
+          lastErr = new Error(`HTTP ${res.status}: ${res.text.slice(0, 120)}`);
+          await sleep(i ? 2 ** i * 1000 : 1000);
+          continue;
+        }
+        return res;
       } catch (e) {
         lastErr = e;
         await sleep(i ? 2 ** i * 1000 : 1000);
