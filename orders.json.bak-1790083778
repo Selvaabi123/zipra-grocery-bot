@@ -1,0 +1,52 @@
+[
+  {
+    "id": "ZIP260922002",
+    "waId": "918807435770",
+    "name": "P Selva",
+    "address": "📍 10.9545319,78.7129475",
+    "lat": 10.9545319,
+    "lng": 78.7129475,
+    "items": [
+      {
+        "productId": "Cooking Oil.Groundnut Oil",
+        "item": "Groundnut Oil",
+        "unit": "litre",
+        "qty": 1,
+        "price": 180,
+        "subtotal": 180
+      }
+    ],
+    "subtotal": 180,
+    "deliveryFee": 30,
+    "total": 210,
+    "paymentMethod": "cod",
+    "paymentStatus": "Not Paid",
+    "status": "delivered",
+    "createdAt": "2026-09-22T10:34:38.148Z",
+    "updatedAt": "2026-09-22T11:49:27.316Z"
+  },
+  {
+    "id": "ZIP260922001",
+    "waId": "918807435770",
+    "name": "P.Selva",
+    "address": "Edumalai Rd, Ayyampalayam, Tamil Nadu 621005",
+    "items": [
+      {
+        "productId": "Rice.India Gate Basmati Rice",
+        "item": "India Gate Basmati Rice",
+        "unit": "kg",
+        "qty": 2,
+        "price": 90,
+        "subtotal": 180
+      }
+    ],
+    "subtotal": 180,
+    "deliveryFee": 30,
+    "total": 210,
+    "paymentMethod": "online",
+    "paymentStatus": "Pending",
+    "status": "received",
+    "createdAt": "2026-09-22T10:16:34.831Z",
+    "updatedAt": "2026-09-22T10:16:34.831Z"
+  }
+]

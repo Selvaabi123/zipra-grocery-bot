@@ -1,0 +1,156 @@
+{
+  "catalog": [
+    {
+      "category": "Rice",
+      "item": "Ponni Rice",
+      "unit": "kg",
+      "price": 65,
+      "stock": 20,
+      "available": true
+    },
+    {
+      "category": "Rice",
+      "item": "India Gate Basmati Rice",
+      "unit": "kg",
+      "price": 90,
+      "stock": 13,
+      "available": true
+    },
+    {
+      "category": "Rice",
+      "item": "Idly Rice",
+      "unit": "kg",
+      "price": 55,
+      "stock": 25,
+      "available": true
+    },
+    {
+      "category": "Dal & Pulses",
+      "item": "Toor Dal",
+      "unit": "kg",
+      "price": 140,
+      "stock": 12,
+      "available": true
+    },
+    {
+      "category": "Dal & Pulses",
+      "item": "Moong Dal",
+      "unit": "kg",
+      "price": 120,
+      "stock": 10,
+      "available": true
+    },
+    {
+      "category": "Dal & Pulses",
+      "item": "Chana Dal",
+      "unit": "kg",
+      "price": 110,
+      "stock": 10,
+      "available": true
+    },
+    {
+      "category": "Cooking Oil",
+      "item": "Fortune Sunflower Oil",
+      "unit": "litre",
+      "price": 150,
+      "stock": 18,
+      "available": true
+    },
+    {
+      "category": "Cooking Oil",
+      "item": "Groundnut Oil",
+      "unit": "litre",
+      "price": 180,
+      "stock": 7,
+      "available": true
+    },
+    {
+      "category": "Grocery Essentials",
+      "item": "Tata Salt",
+      "unit": "kg",
+      "price": 30,
+      "stock": 50,
+      "available": true
+    },
+    {
+      "category": "Grocery Essentials",
+      "item": "Aashirvaad Sugar",
+      "unit": "kg",
+      "price": 48,
+      "stock": 30,
+      "available": true
+    },
+    {
+      "category": "Grocery Essentials",
+      "item": "Parle-G",
+      "unit": "packet",
+      "price": 10,
+      "stock": 40,
+      "available": true
+    },
+    {
+      "category": "Grocery Essentials",
+      "item": "Oreo",
+      "unit": "packet",
+      "price": 30,
+      "stock": 25,
+      "available": true
+    },
+    {
+      "category": "Flour & Atta",
+      "item": "Aashirvaad Atta",
+      "unit": "kg",
+      "price": 48,
+      "stock": 22,
+      "available": true
+    },
+    {
+      "category": "Flour & Atta",
+      "item": "Rice Flour",
+      "unit": "kg",
+      "price": 55,
+      "stock": 9,
+      "available": true
+    },
+    {
+      "category": "Beverages",
+      "item": "Tata Tea",
+      "unit": "packet",
+      "price": 120,
+      "stock": 16,
+      "available": true
+    },
+    {
+      "category": "Beverages",
+      "item": "Bru Coffee",
+      "unit": "jar",
+      "price": 140,
+      "stock": 8,
+      "available": true
+    },
+    {
+      "category": "Dairy",
+      "item": "Aavin Milk",
+      "unit": "litre",
+      "price": 60,
+      "stock": 0,
+      "available": false
+    },
+    {
+      "category": "Dairy",
+      "item": "Milk Curd",
+      "unit": "cup",
+      "price": 30,
+      "stock": 10,
+      "available": true
+    },
+    {
+      "category": "Dairy",
+      "item": "Fresh Paneer",
+      "unit": "kg",
+      "price": 320,
+      "stock": 5,
+      "available": true
+    }
+  ]
+}

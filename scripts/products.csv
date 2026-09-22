@@ -1,0 +1,20 @@
+Category,Item,Unit,Price,Stock,Available
+Rice,Ponni Rice,kg,65,20,yes
+Rice,India Gate Basmati Rice,kg,90,13,yes
+Rice,Idly Rice,kg,55,25,yes
+Dal & Pulses,Toor Dal,kg,140,12,yes
+Dal & Pulses,Moong Dal,kg,120,10,yes
+Dal & Pulses,Chana Dal,kg,110,10,yes
+Cooking Oil,Fortune Sunflower Oil,litre,150,18,yes
+Cooking Oil,Groundnut Oil,litre,180,7,yes
+Grocery Essentials,Tata Salt,kg,30,50,yes
+Grocery Essentials,Aashirvaad Sugar,kg,48,30,yes
+Grocery Essentials,Parle-G,packet,10,40,yes
+Grocery Essentials,Oreo,packet,30,25,yes
+Flour & Atta,Aashirvaad Atta,kg,48,22,yes
+Flour & Atta,Rice Flour,kg,55,9,yes
+Beverages,Tata Tea,packet,120,16,yes
+Beverages,Bru Coffee,jar,140,8,yes
+Dairy,Aavin Milk,litre,60,0,no
+Dairy,Milk Curd,cup,30,10,yes
+Dairy,Fresh Paneer,kg,320,5,yes

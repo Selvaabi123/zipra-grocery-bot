@@ -1,0 +1,19 @@
+{
+  "name": "grocery-bot",
+  "version": "1.0.0",
+  "description": "Rule-based WhatsApp grocery ordering bot with Google Sheets storage",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "simulate": "node scripts/simulate.js",
+    "test": "node scripts/test-bot.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "dotenv": "^16.4.5",
+    "googleapis": "^140.0.1"
+  }
+}
