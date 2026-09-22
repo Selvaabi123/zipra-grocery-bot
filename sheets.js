@@ -1,5 +1,7 @@
 require("dotenv").config();
 
+const { getJson, postJson } = require("./net");
+
 const WEBAPP_URL = process.env.SHEET_WEBAPP_URL;
 const SECRET = process.env.SHEET_SECRET || "change-me";
 
@@ -29,42 +31,34 @@ async function saveOrder(order) {
     c.subtotal,
     "Pending",
   ]);
-  const res = await fetch(WEBAPP_URL, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: JSON.stringify({ secret: SECRET, rows: values }),
-  });
-  if (!res.ok) throw new Error(`Sheet webapp error ${res.status}`);
+  const j = await postJson(WEBAPP_URL, { secret: SECRET, rows: values });
+  if (!j || !j.ok) throw new Error("Sheet webapp rejected order");
   return { mirrored: true };
 }
 
 async function readOrders() {
   if (!WEBAPP_URL) return { ok: false, orders: [] };
   const sep = WEBAPP_URL.includes("?") ? "&" : "?";
-  const res = await fetch(
+  const j = await getJson(
     `${WEBAPP_URL}${sep}orders=1&secret=${encodeURIComponent(SECRET)}`
   );
-  if (!res.ok) throw new Error(`Sheet webapp error ${res.status}`);
-  const j = await res.json();
   if (!j || !Array.isArray(j.orders)) return { ok: false, orders: [] };
   return { ok: true, orders: j.orders };
 }
 
 async function updateOrderStatus(orderNo, status) {
   if (!WEBAPP_URL) return false;
-  const res = await fetch(WEBAPP_URL, {
-    method: "POST",
-    headers: { "Content-Type": "text/plain" },
-    body: JSON.stringify({
+  try {
+    const j = await postJson(WEBAPP_URL, {
       secret: SECRET,
       action: "updateStatus",
       orderNo,
       status,
-    }),
-  });
-  if (!res.ok) return false;
-  const j = await res.json().catch(() => ({}));
-  return !!(j && j.ok);
+    });
+    return !!(j && j.ok);
+  } catch {
+    return false;
+  }
 }
 
 async function getOrderById(orderNo) {

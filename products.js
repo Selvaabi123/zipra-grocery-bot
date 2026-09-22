@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { getJson } = require("./net");
 
 const PRODUCTS_FILE = process.env.PRODUCTS_FILE || path.join(__dirname, "products.json");
 const SHEET_WEBAPP_URL = process.env.SHEET_WEBAPP_URL || "";
@@ -40,9 +41,7 @@ async function refreshFromGoogleSheet(force = false) {
   try {
     const sep = SHEET_WEBAPP_URL.includes("?") ? "&" : "?";
     const url = `${SHEET_WEBAPP_URL}${sep}products=1&secret=${encodeURIComponent(SHEET_SECRET)}`;
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const json = await res.json();
+    const json = await getJson(url);
     if (json && Array.isArray(json.catalog) && json.catalog.length) {
       const mapped = json.catalog.map(mapSheetRow).filter((r) => r.item);
       if (mapped.length) {
