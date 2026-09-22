@@ -135,7 +135,7 @@ app.post("/webhook", async (req, res) => {
   const body = req.body;
   if (!body || !body.entry) return res.sendStatus(200);
 
-  await products.refreshFromGoogleSheet().catch(() => {});
+  products.refreshFromGoogleSheet().catch(() => {});
 
   const jobs = [];
   for (const entry of body.entry || []) {

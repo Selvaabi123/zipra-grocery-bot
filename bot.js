@@ -82,7 +82,8 @@ function categoryMenuReply() {
   ]);
 }
 
-function productListReply(category, note) {
+async function productListReply(category, note) {
+  await products.refreshFromGoogleSheet().catch(() => {});
   const rows = products.getProductsInCategory(category).map((p, i) => ({
     id: `prod|${i + 1}`,
     title: p.item,
