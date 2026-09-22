@@ -135,6 +135,8 @@ app.post("/webhook", async (req, res) => {
   const body = req.body;
   if (!body || !body.entry) return res.sendStatus(200);
 
+  await products.refreshFromGoogleSheet().catch(() => {});
+
   const jobs = [];
   for (const entry of body.entry || []) {
     for (const change of entry.changes || []) {
@@ -398,9 +400,7 @@ if (!SHEET_ONLY) {
     products.refreshFromGoogleSheet().catch(() => {});
   }, parseInt(process.env.PRODUCTS_SYNC_TTL || "300000", 10));
 }
-if (!SHEET_ONLY) {
-  products.refreshFromGoogleSheet().catch(() => {});
-}
+products.refreshFromGoogleSheet().catch(() => {});
 
 app.use((req, res, next) => {
   res.status(200).send("Zipra webhook endpoint OK");
