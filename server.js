@@ -87,6 +87,7 @@ async function sendMessage(to, body) {
       Authorization: `Bearer ${WHATSAPP_TOKEN}`,
     },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000),
   });
   if (!res.ok) {
     const resp = await res.text();
@@ -181,7 +182,9 @@ app.post("/webhook", async (req, res) => {
           (async () => {
             try {
               const botReply = await handleMessage(from, payload);
+              console.log("[handler] reply:", botReply ? botReply.type + " len=" + String(botReply.text || botReply.body || "").length : "NONE");
               if (botReply) await sendReply(from, botReply);
+              console.log("[handler] done");
             } catch (err) {
               console.error("Message handling error:", err);
             }
