@@ -4,6 +4,7 @@ const { handleMessage, cleanupExpiredSessions } = require("./bot");
 const orders = require("./orders");
 const products = require("./products");
 const sheets = require("./sheets");
+const { request } = require("./net");
 
 const app = express();
 app.use(express.json());
