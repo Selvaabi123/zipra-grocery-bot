@@ -412,6 +412,8 @@ app.get("/diag", async (req, res) => {
       process.env.SHEET_WEBAPP_URL + "?status=1&secret=" + process.env.SHEET_SECRET
     )}`,
     process.env.SHEET_WEBAPP_URL + "?status=1&secret=" + process.env.SHEET_SECRET,
+    process.env.SHEET_WEBAPP_URL + "?products=1&secret=" + process.env.SHEET_SECRET,
+    process.env.SHEET_WEBAPP_URL + "?orders=1&secret=" + process.env.SHEET_SECRET,
   ];
   for (const u of urls) {
     try {
