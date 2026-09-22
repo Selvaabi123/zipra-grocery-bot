@@ -161,12 +161,22 @@ app.post("/webhook", async (req, res) => {
             name: msg.location.name || "",
           };
         } else if (msg.interactive) {
+          console.log(
+            "[interactive] type=", msg.interactive.type,
+            "button=", msg.interactive.button_reply ? JSON.stringify(msg.interactive.button_reply) : "none",
+            "list=", msg.interactive.list_reply ? JSON.stringify(msg.interactive.list_reply) : "none",
+            "nfm=", msg.interactive.nfm_reply ? JSON.stringify(msg.interactive.nfm_reply) : "none"
+          );
           const reply =
             (msg.interactive.button_reply && msg.interactive.button_reply.id) ||
-            (msg.interactive.list_reply && msg.interactive.list_reply.id);
+            (msg.interactive.list_reply && msg.interactive.list_reply.id) ||
+            (msg.interactive.nfm_reply && msg.interactive.nfm_reply.response_json);
           if (reply) payload = { kind: "interactive", id: reply };
         }
-        if (!payload) continue;
+        if (!payload) {
+          console.log("[webhook] skipped msg (no parseable content)");
+          continue;
+        }
         jobs.push(
           (async () => {
             try {
