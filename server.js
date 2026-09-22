@@ -8,6 +8,8 @@ const sheets = require("./sheets");
 const app = express();
 app.use(express.json());
 
+const SHEET_ONLY = process.env.SHEET_ONLY === "1";
+
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
@@ -387,16 +389,28 @@ load();
 </html>`);
 });
 
-setInterval(cleanupExpiredSessions, 60000);
-setInterval(() => {
-  processedMessageIds.clear();
-}, MSG_ID_TTL);
-setInterval(() => {
+if (!SHEET_ONLY) {
+  setInterval(cleanupExpiredSessions, 60000);
+  setInterval(() => {
+    processedMessageIds.clear();
+  }, MSG_ID_TTL);
+  setInterval(() => {
+    products.refreshFromGoogleSheet().catch(() => {});
+  }, parseInt(process.env.PRODUCTS_SYNC_TTL || "300000", 10));
+}
+if (!SHEET_ONLY) {
   products.refreshFromGoogleSheet().catch(() => {});
-}, parseInt(process.env.PRODUCTS_SYNC_TTL || "300000", 10));
-products.refreshFromGoogleSheet().catch(() => {});
+}
 
-app.listen(PORT, () => {
-  console.log(`Zipra grocery bot listening on port ${PORT}`);
-  console.log(`Webhook: POST /webhook | Admin: /admin`);
+app.use((req, res, next) => {
+  res.status(200).send("Zipra webhook endpoint OK");
 });
+
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Zipra grocery bot listening on port ${PORT}`);
+    console.log(`Webhook: POST /webhook | Admin: /admin`);
+  });
+}
+
+module.exports = { app };

@@ -5,11 +5,15 @@ const PRODUCTS_FILE = process.env.PRODUCTS_FILE || path.join(__dirname, "product
 const SHEET_WEBAPP_URL = process.env.SHEET_WEBAPP_URL || "";
 const SHEET_SECRET = process.env.SHEET_SECRET || "";
 const SYNC_TTL_MS = parseInt(process.env.PRODUCTS_SYNC_TTL || "300000", 10);
+const SHEET_ONLY = process.env.SHEET_ONLY === "1";
 
-let data = JSON.parse(fs.readFileSync(PRODUCTS_FILE, "utf8"));
+let data = SHEET_ONLY
+  ? { catalog: [] }
+  : JSON.parse(fs.readFileSync(PRODUCTS_FILE, "utf8"));
 let lastSync = 0;
 
 function persist() {
+  if (SHEET_ONLY) return;
   fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(data, null, 2));
 }
 

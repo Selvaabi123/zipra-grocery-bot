@@ -2,6 +2,9 @@ const fs = require("fs");
 const path = require("path");
 
 const ORDERS_FILE = process.env.ORDERS_FILE || path.join(__dirname, "orders.json");
+const SHEET_ONLY = process.env.SHEET_ONLY === "1";
+
+let memory = [];
 
 const STATUS_FLOW = [
   "received",
@@ -21,6 +24,7 @@ const STATUS_LABEL = {
 };
 
 function load() {
+  if (SHEET_ONLY) return memory;
   try {
     return JSON.parse(fs.readFileSync(ORDERS_FILE, "utf8"));
   } catch {
@@ -29,6 +33,7 @@ function load() {
 }
 
 function persist(orders) {
+  if (SHEET_ONLY) return;
   fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
 }
 
@@ -52,6 +57,7 @@ function nextOrderNo() {
 function insert(order) {
   const orders = load();
   orders.unshift(order);
+  if (SHEET_ONLY) memory = orders;
   persist(orders);
   return order;
 }

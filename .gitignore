@@ -3,3 +3,5 @@ node_modules/
 *.log
 .DS_Storeorders.json
 orders.json.bak-*
+.vercel
+.env*
