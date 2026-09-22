@@ -136,9 +136,27 @@ async function notifyStatus(order) {
   }
 }
 
+const RELAY_TUNNEL_URL = process.env.RELAY_TUNNEL_URL || "";
+
 app.post("/webhook", async (req, res) => {
   const body = req.body;
   if (!body || !body.entry) return res.sendStatus(200);
+
+  if (RELAY_TUNNEL_URL) {
+    const fwd = JSON.stringify(body);
+    request(`${RELAY_TUNNEL_URL}/webhook`, {
+      method: "POST",
+      contentType: "application/json",
+      body: fwd,
+      timeout: 12000,
+      retries: 1,
+    })
+      .then((r) => {
+        if (r.status >= 400) console.error("relay status:", r.status);
+      })
+      .catch((e) => console.error("relay error:", e.message));
+    return res.sendStatus(200);
+  }
 
   products.refreshFromGoogleSheet().catch(() => {});
 
