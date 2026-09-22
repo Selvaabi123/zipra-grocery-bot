@@ -80,22 +80,25 @@ function buildReplyPayload(to, reply) {
 
 async function sendMessage(to, body) {
   const url = `${GRAPH_URL}/${PHONE_NUMBER_ID}/messages`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${WHATSAPP_TOKEN}`,
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!res.ok) {
-    const resp = await res.text();
-    console.error("WhatsApp send failed:", res.status, resp);
-  } else {
+  try {
+    const res = await request(url, {
+      method: "POST",
+      contentType: "application/json",
+      body: JSON.stringify(body),
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      timeout: 9000,
+      retries: 1,
+    });
+    if (res.status >= 400) {
+      console.error("WhatsApp send failed:", res.status, res.text.slice(0, 200));
+      return false;
+    }
     console.log("[send] OK to", to);
+    return true;
+  } catch (err) {
+    console.error("WhatsApp send error:", err.message);
+    return false;
   }
-  return res.ok;
 }
 
 function sendReply(to, reply) {

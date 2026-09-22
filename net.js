@@ -5,7 +5,7 @@ const UA =
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function request(url, { method = "GET", body, maxRedirects = 5, timeout = 30000, retries = 3 } = {}) {
+function request(url, { method = "GET", body, contentType, headers = {}, maxRedirects = 5, timeout = 30000, retries = 3 } = {}) {
   const attempt = () =>
     new Promise((resolve, reject) => {
       const go = (u, depth) => {
@@ -14,11 +14,11 @@ function request(url, { method = "GET", body, maxRedirects = 5, timeout = 30000,
           method,
           hostname: ux.hostname,
           path: ux.pathname + ux.search,
-          headers: { "User-Agent": UA, Accept: "*/*" },
+          headers: { "User-Agent": UA, Accept: "*/*", ...headers },
           timeout,
         };
         if (body !== undefined) {
-          opts.headers["Content-Type"] = "text/plain;charset=UTF-8";
+          opts.headers["Content-Type"] = contentType || "text/plain;charset=UTF-8";
         }
         const req = https.request(opts, (res) => {
           if (
