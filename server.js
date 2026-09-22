@@ -87,7 +87,7 @@ async function sendMessage(to, body) {
       contentType: "application/json",
       body: JSON.stringify(body),
       headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
-      timeout: 9000,
+      timeout: 6000,
       retries: 1,
     });
     if (res.status >= 400) {
