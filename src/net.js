@@ -44,7 +44,8 @@ function request(url, { method = "GET", body, contentType, headers = {}, maxRedi
 
   return (async () => {
     let lastErr;
-    for (let i = 0; i < retries; i++) {
+    const tries = Math.max(1, retries);
+    for (let i = 0; i < tries; i++) {
       try {
         const res = await attempt();
         if (res.status >= 400) {

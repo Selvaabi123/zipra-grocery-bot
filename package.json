@@ -1,19 +1,19 @@
 {
   "name": "grocery-bot",
-  "version": "1.0.0",
-  "description": "Rule-based WhatsApp grocery ordering bot with Google Sheets storage",
-  "main": "server.js",
+  "version": "2.0.0",
+  "description": "ZIPRA WhatsApp grocery ordering bot + admin dashboard (SQLite database)",
+  "main": "src/server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node src/server.js",
     "simulate": "node scripts/simulate.js",
-    "test": "node scripts/test-bot.js"
+    "test": "node scripts/test-bot.js && node scripts/test-api.js"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22.13.0"
   },
   "dependencies": {
-    "express": "^4.19.2",
     "dotenv": "^16.4.5",
-    "googleapis": "^140.0.1"
+    "express": "^4.19.2",
+    "serverless-http": "^4.0.0"
   }
 }

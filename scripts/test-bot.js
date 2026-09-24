@@ -1,21 +1,18 @@
 const fs = require("fs");
-const path = require("path");
 
-const ORDERS_FILE = "/tmp/zipra-test-orders.json";
-const PRODUCTS_FILE = "/tmp/zipra-test-products.json";
+const DB_PATH = `/tmp/zipra-test-bot-${process.pid}.db`;
+try { fs.unlinkSync(DB_PATH); } catch {}
+for (const f of [DB_PATH + "-wal", DB_PATH + "-shm"]) {
+  try { fs.unlinkSync(f); } catch {}
+}
 
-fs.copyFileSync(path.join(__dirname, "..", "products.json"), PRODUCTS_FILE);
-try { fs.unlinkSync(ORDERS_FILE); } catch {}
-
-process.env.ORDERS_FILE = ORDERS_FILE;
-process.env.PRODUCTS_FILE = PRODUCTS_FILE;
+process.env.DB_PATH = DB_PATH;
 process.env.DELIVERY_FEE = "30";
 process.env.PAYMENT_UPI_ID = "ziprashop@upi";
-process.env.SHEET_WEBAPP_URL = "";
 
 const assert = require("assert");
-const { handleMessage, flattenReply } = require("../bot");
-const orders = require("../orders");
+const { handleMessage, flattenReply } = require("../src/bot");
+const orders = require("../src/orders");
 
 const from = "919001002003";
 
@@ -29,8 +26,42 @@ const loc = () => ({
   name: "Home",
 });
 
+const clen = (s) => String(s || "").length;
+
+function validateReply(r) {
+  assert(r && r.type, "reply has a type");
+  const body = r.body || r.text || "";
+  assert(clen(body) <= 1024, "message body <=1024 chars: " + clen(body));
+  if (r.type === "buttons") {
+    assert(
+      Array.isArray(r.buttons) && r.buttons.length >= 1 && r.buttons.length <= 3,
+      "reply buttons must be 1-3 (Meta cap): " + r.buttons.map((b) => b.title).join(" / ")
+    );
+    for (const b of r.buttons) {
+      assert(clen(b.title) <= 20, "button title <=20: " + JSON.stringify(b.title));
+      assert(clen(b.id) <= 256, "button id <=256");
+    }
+  }
+  if (r.type === "list") {
+    assert(Array.isArray(r.sections) && r.sections.length >= 1 && r.sections.length <= 8, "sections 1-8");
+    for (const sec of r.sections) {
+      assert(clen(sec.title) <= 24, "section title <=24");
+      assert(
+        Array.isArray(sec.rows) && sec.rows.length >= 1 && sec.rows.length <= 10,
+        "list rows must be 1-10 (Meta cap): got " + sec.rows.length
+      );
+      for (const row of sec.rows) {
+        assert(clen(row.title) <= 24, "row title <=24: " + JSON.stringify(row.title));
+        assert(clen(row.description || "") <= 72, "row desc <=72");
+        assert(clen(row.id) <= 256, "row id <=256");
+      }
+    }
+  }
+}
+
 async function step(label, payload, expectInclude) {
   const reply = await handleMessage(from, payload);
+  validateReply(reply);
   const shown = flattenReply(reply);
   assert.strictEqual(
     shown.includes(expectInclude),
@@ -43,14 +74,14 @@ async function step(label, payload, expectInclude) {
 
 async function run() {
   // Welcome
-  const m0 = await step("welcome hi", text("hi"), "Welcome to Zipra");
-  assert.strictEqual(m0.type, "list");
+  const m0 = await step("welcome hi", text("hi"), "Welcome to ZIPRA");
+  assert.strictEqual(m0.type, "buttons");
 
-  const u1 = await step("unknown → welcome", text("jskd"), "Welcome to Zipra");
-  assert.strictEqual(u1.type, "list");
+  const u1 = await step("unknown → welcome", text("jskd"), "Welcome to ZIPRA");
+  assert.strictEqual(u1.type, "buttons");
 
   // Multi-select: pick several items from same list
-  await step("shop", id("home|shop"), "Shop by Category");
+  await step("shop", id("home|shop"), "Choose a category");
   await step("cat Rice", id("cat|Rice"), "Ponni Rice");
   const a = await step("quick add Ponni", id("prod|1"), "Added: *Ponni Rice* ×1");
   assert.strictEqual(a.type, "list", "after quick add stays in list");
@@ -59,19 +90,19 @@ async function run() {
   const c = await step("quick add Ponni again", id("prod|1"), "Added:");
   // done → cart
   const d = await step("done → cart", id("prod|done"), "Your Cart");
-  assert.strictEqual(d.type, "list");
+  assert.strictEqual(d.type, "buttons");
 
   // Change quantity (Ponni 2 → 5)
   await step("change qty menu", id("cart|qty"), "Change Quantity");
   await step("pick Ponni line", id("cq|0"), "current 2");
   await step("set qty 5", id("qty|5"), "Total");
-  const e = await step("cart after qty change", id("nav|back"), "Ponni Rice × 5");
+  const e = await step("cart after qty change (direct)", id("cart|qty"), "Change Quantity");
   assert.strictEqual(e.type, "list");
 
   // Remove an item
   await step("remove item menu", id("cart|edit"), "Remove");
   const f = await step("remove basmati", id("rm|1"), "Your Cart");
-  assert(f.type === "list");
+  assert(f.type === "buttons");
 
   // Checkout with LOCATION (no typing)
   const g = await step("checkout", id("cart|checkout"), "name");
@@ -85,12 +116,12 @@ async function run() {
   const j = await step("online payment", id("pay|online"), "UPI");
   assert.strictEqual(j.type, "list");
   assert(flattenReply(j).includes("upi://pay"), "upi link present");
-  const k = await step("done continue", id("pay|review"), "Review Your Order");
+  const k = await step("done continue", id("pay|review"), "Order Summary");
   assert.strictEqual(k.type, "buttons");
   assert(flattenReply(k).includes("maps.google.com"), "review has maps link");
 
   // Confirm
-  const m = await step("confirm", id("rev|confirm"), "Order Placed");
+  const m = await step("confirm", id("rev|confirm"), "Order Confirmed");
   assert.strictEqual(m.type, "text");
 
   const saved = orders.findByWa(from, 5);
@@ -103,7 +134,7 @@ async function run() {
   console.log("PASS [order saved with location + qty + online pay]");
 
   // Stock reduced correctly: Ponni 20→15, Basmati removed (no), Tata? not bought
-  const prod = require("../products");
+  const prod = require("../src/products");
   assert.strictEqual(prod.getProductByKey("Rice.Ponni Rice").stock, 15);
   console.log("PASS [stock reduced]");
 
@@ -116,13 +147,27 @@ async function run() {
   await step("my orders", id("home|orders"), o.id);
 
   // Out of stock product not addable
-  await step("shop", id("home|shop"), "Shop by Category");
+  await step("shop", id("home|shop"), "Choose a category");
   await step("dairy", id("cat|Dairy"), "Aavin Milk");
   const oos = await step("oop add Aavin", id("prod|1"), "out of stock");
   assert.strictEqual(oos.type, "list");
 
   // Unknown msg mid-flow → welcome
-  await step("unknown again", text("g"), "Welcome to Zipra");
+  await step("unknown again", text("g"), "Welcome to ZIPRA");
+
+  // Stress: large cart never exceeds WhatsApp row/button caps
+  for (const cat of ["Rice", "Dairy", "Beverages"]) {
+    await step("stress shop", id("home|shop"), "Choose a category");
+    await step("stress cat " + cat, id("cat|" + cat), cat);
+    for (let i = 1; i <= 7; i++) {
+      validateReply(await handleMessage(from, id("prod|" + i)));
+    }
+  }
+  await step("stress done", id("prod|done"), "Your Cart");
+  await step("stress change qty", id("cart|qty"), "Change Quantity");
+  await step("stress back to cart", id("nav|back"), "Your Cart");
+  await step("stress remove", id("cart|edit"), "Remove");
+  console.log("PASS [stress limits: rows/buttons/titles within Meta caps]");
 
   console.log("\n✅ All tests passed!");
   process.exit(0);

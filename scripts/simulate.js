@@ -1,5 +1,5 @@
 const readline = require("readline");
-const { handleMessage, flattenReply } = require("../bot");
+const { handleMessage, flattenReply } = require("../src/bot");
 
 let orderNo = 100;
 const mockSaveOrder = async (cart, from, total) => {
