@@ -67,7 +67,7 @@ function buttonReply(body, buttons) {
 function mainMenuReply(note) {
   return buttonReply(
     (note ? note + "\n\n" : "") +
-      "🛒 Welcome to ZIPRA\n\nFresh groceries delivered to your doorstep.\n\nHow can we help you today?\n\n(Type 'help' for assistance)",
+      "🛒 Welcome to ZIPRA\n\nFresh Groceries. Faster Deliveries.\n\nHow can we help you today?\n\n(Type 'help' for assistance)",
     [
       { id: "home|shop", title: "🛍 Place Order" },
       { id: "home|track", title: "📦 Order Status" },
@@ -985,7 +985,7 @@ async function confirmOrder(s, from) {
     `\n\n💰 *Total*\n₹${order.total}\n\n` +
     `📍 *Delivery*\n${deliveryLine}\n\n` +
     `💳 *Payment*\n${order.paymentMethod === "online" ? "Online Payment" : "Cash on Delivery"}\n\n` +
-    `We'll keep you updated here.\nThank you for choosing ZIPRA 💚`;
+    `We'll keep you updated here.\nThank you for choosing ZIPRA 🧡`;
 
   return textReply(msg);
 }

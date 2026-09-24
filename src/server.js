@@ -193,15 +193,15 @@ function sendText(to, text) {
 
 const STATUS_NOTIFICATION = {
   confirmed:
-    "✅ *Order Update*\n\nOrder #<ID>\n\nYour order has been confirmed.\n\n📦 *Status*\nConfirmed\n\nWe'll keep you updated here. 💚",
+    "✅ *Order Update*\n\nOrder #<ID>\n\nYour order has been confirmed.\n\n📦 *Status*\nConfirmed\n\nWe'll keep you updated here. 🧡",
   preparing:
-    "👨‍🍳 *Order Update*\n\nOrder #<ID>\n\nYour order is being prepared.\n\n📦 *Status*\nPreparing\n\nWe'll keep you updated here. 💚",
+    "👨‍🍳 *Order Update*\n\nOrder #<ID>\n\nYour order is being prepared.\n\n📦 *Status*\nPreparing\n\nWe'll keep you updated here. 🧡",
   out_for_delivery:
-    "🛵 *Order Update*\n\nOrder #<ID>\n\nYour order is on the way!\n\n📦 *Status*\nOut for Delivery\n\nPlease keep your phone available for delivery. 💚",
+    "🛵 *Order Update*\n\nOrder #<ID>\n\nYour order is on the way!\n\n📦 *Status*\nOut for Delivery\n\nPlease keep your phone available for delivery. 🧡",
   delivered:
-    "🎉 *Order Delivered!*\n\nOrder #<ID>\n\nYour order has been delivered successfully.\n\nThank you for shopping with ZIPRA! 💚",
+    "🎉 *Order Delivered!*\n\nOrder #<ID>\n\nYour order has been delivered successfully.\n\nThank you for shopping with ZIPRA! 🧡",
   cancelled:
-    "❌ *Order Update*\n\nOrder #<ID>\n\nYour order has been cancelled.\n\nIf you need help, contact us on WhatsApp. 💚",
+    "❌ *Order Update*\n\nOrder #<ID>\n\nYour order has been cancelled.\n\nIf you need help, contact us on WhatsApp. 🧡",
 };
 
 async function notifyStatus(order) {
@@ -474,7 +474,7 @@ app.post("/api/orders/:id/notify", adminAuth, wrap(async (req, res) => {
     `🧾 Order #${order.id} — ${order.status}\n\n` +
     `Placed: ${order.createdAt}\nTotal: ₹${order.total}\n` +
     (order.partnerName ? `Assigned to: ${order.partnerName}\n` : "") +
-    `\nThank you for choosing ZIPRA 💚`;
+    `\nThank you for choosing ZIPRA 🧡`;
   const sent = await sendText(order.waId, message || defaultMsg);
   res.json({ ok: true, sent });
 }));
