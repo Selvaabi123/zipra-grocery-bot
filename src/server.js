@@ -411,6 +411,62 @@ app.post("/webhook", async (req, res) => {
   }
 
   const jobs = [];
+  const seenPaymentStatus = new Set();
+  /* Handles a native WhatsApp Payments status notification (PG deep-integration
+     mode). The order is identified by payment.reference_id (what we put in the
+     order details / pay request). The amount we said the customer paid is
+     cross-checked against the order total BEFORE we mark it Paid. */
+  const handleNativePayment = (st, defaultValueContacts) => {
+    const pid = String(st.id || "");
+    if (pid && (seenPaymentStatus.has(pid) || db.webhookMsgSeen(pid))) return;
+    if (pid) {
+      seenPaymentStatus.add(pid);
+      db.markWebhookMsg(pid);
+    }
+    const pay = st.payment || {};
+    const ref = String(pay.reference_id || st.reference_id || "").trim();
+    const amt = pay.amount ? Number(pay.amount.value) / Number(pay.amount.offset || 100) : null;
+    const tp = String(st.type || "").toLowerCase();
+    const stt = String(st.status || "").toLowerCase();
+    console.log(`[webhook] native payment ${pid || "?"} -> ${stt} ref=${ref} amt=${amt == null ? "?" : fmtMoney(amt)}`);
+    jobs.push(
+      (async () => {
+        try {
+          if (ref) {
+            const order = db.getOrderDetail(ref);
+            if (!order) {
+              console.log("[webhook] native payment ref not found:", ref);
+              return;
+            }
+            if (["captured", "completed", "success"].includes(stt)) {
+              await verifyPayment(ref, pay.transaction_id || pay.transaction?.id || pid || `wa-pay-${Date.now()}`, tp === "payment" ? "whatsapp" : pay.transaction?.type || "whatsapp", amt);
+            } else if (["failed", "error", "declined", "rejected"].includes(stt)) {
+              db.updatePayment(ref, "Failed", pay.transaction?.type || "whatsapp", pid || `wa-pay-${Date.now()}`);
+              console.log("[webhook] native payment failed, order stays unpaid:", ref);
+            } else if (["refunded", "refund"].includes(stt)) {
+              db.updatePayment(ref, "Refunded", pay.transaction?.type || "whatsapp", pid || `wa-pay-${Date.now()}`);
+            }
+            // "pending" status → leave order Pending so the customer can retry
+            return;
+          }
+          // No reference id yet — retro-match by sender + exact amount.
+          const sender = String((defaultValueContacts && defaultValueContacts[0] && defaultValueContacts[0].wa_id) || st.sender || "").replace(/[^\d]/g, "");
+          if (!sender || amt == null) return;
+          const order = findPendingOrderByWaAndAmount(sender, amt);
+          if (!order) {
+            console.log("[webhook] native payment completed but no matching pending order", sender, amt);
+            return;
+          }
+          const oid = order.id;
+          if (["captured", "completed", "success"].includes(stt)) {
+            await verifyPayment(oid, pid || `wa-pay-${Date.now()}`, "whatsapp", amt);
+          }
+        } catch (e) {
+          console.error("[webhook] native payment verification error:", e.message);
+        }
+      })()
+    );
+  };
   for (const entry of body.entry || []) {
     for (const change of entry.changes || []) {
       const value = change.value || {};
@@ -418,31 +474,17 @@ app.post("/webhook", async (req, res) => {
       if (Array.isArray(statuses) && statuses.length) {
         for (const st of statuses) {
           const err = st.error && (st.error.message || st.error.code);
+          if ((st.type || "").toLowerCase() === "payment") {
+            handleNativePayment(st, value.contacts);
+            continue;
+          }
           console.log(`[webhook] status ${st.id || "?"} -> ${st.status}${err ? " error=" + String(err).slice(0, 80) : ""}`);
         }
       }
       const payments = value.payments;
       if (Array.isArray(payments) && payments.length) {
-        for (const p of payments) {
-          const amt = p.amount ? Number(p.amount.value) / Number(p.amount.offset || 100) : 0;
-          console.log(`[webhook] payment ${p.id || "?"} -> ${p.status} from ${p.sender || "?"} amount ${fmtMoney(amt)}`);
-          if (p.status !== "completed") continue;
-          const sender = String(p.sender || "").replace(/[^\d]/g, "");
-          jobs.push(
-            (async () => {
-              try {
-                const order = findPendingOrderByWaAndAmount(sender, amt);
-                if (!order) {
-                  console.log("[webhook] payment completed but no matching pending order", sender, amt);
-                  return;
-                }
-                await verifyPayment(order.id, p.id || `wa-pay-${Date.now()}`, "whatsapp");
-              } catch (e) {
-                console.error("[webhook] payment verification error:", e.message);
-              }
-            })()
-          );
-        }
+        // Legacy/"payments" bucket form of the same notification.
+        for (const p of payments) handleNativePayment({ id: p.id, status: p.status, payment: p.payment || p, sender: p.sender, type: p.type }, value.contacts);
       }
       const msgs = value.messages;
       if (!msgs) continue;
@@ -459,6 +501,14 @@ app.post("/webhook", async (req, res) => {
 
         const from = msg.from;
         console.log(`[webhook] msg ${msgId} from ${from} type ${msg.type || (msg.text ? "text" : msg.location ? "location" : msg.interactive ? "interactive" : "other")}`);
+        // Message-level payment confirmation (legacy "WhatsApp Pay" form).
+        if (msg.interactive && msg.interactive.type === "payment" && msg.interactive.payment) {
+          const p = msg.interactive.payment;
+          const stt = String(p.status || "").toLowerCase();
+          const amt = p.total_amount ? Number(p.total_amount.value) / Number(p.total_amount.offset || 100) : null;
+          handleNativePayment({ id: "paymsg-" + msgId, status: stt, payment: { reference_id: p.reference_id, amount: { value: p.total_amount && p.total_amount.value, offset: p.total_amount && p.total_amount.offset }, transaction_id: p.transaction_id } });
+          if (["captured", "completed", "success"].includes(stt)) continue; // don't double-route to the bot
+        }
         let payload = null;
         if (msg.text) {
           payload = { kind: "text", text: msg.text.body };
@@ -713,6 +763,8 @@ app.get("/pay/:orderNo", wrap(async (req, res) => {
     upiId: PAYMENT_UPI_ID,
     upiLink: buildUpiLink(order),
     simulator: PAYMENT_SIMULATOR === "1",
+    waPhone: await getBusinessPhone(),
+    store: db.getSetting("store_name", "ZIPRA Grocery"),
   }));
 }));
 
@@ -746,6 +798,7 @@ app.get("/api/store/catalog", wrap(async (req, res) => {
 app.get("/api/store/order/:orderNo", wrap(async (req, res) => {
   const order = db.getOrderDetail(req.params.orderNo);
   if (!order) return res.status(404).json({ error: "Order not found" });
+  const intent = (order.payments || []).find((p) => ["Pending", "Paid"].includes(p.status));
   res.json({
     order: {
       id: order.id,
@@ -755,6 +808,7 @@ app.get("/api/store/order/:orderNo", wrap(async (req, res) => {
       deliveryFee: order.deliveryFee,
       total: order.total,
       paymentStatus: order.paymentStatus,
+      paymentId: intent ? `PAY-${intent.id}` : null,
       status: order.status,
       createdAt: order.createdAt,
     },
@@ -808,6 +862,7 @@ app.post("/api/checkout", wrap(async (req, res) => {
     if (dupOrder && dupOrder.paymentStatus !== "Paid" && dupOrder.status !== "cancelled") {
       // Same cart, same user, still unpaid — reuse instead of duplicating.
       const dupObj = { ...dupOrder, items: dupOrder.items, subtotal: dupOrder.subtotal, deliveryFee: dupOrder.deliveryFee, total: dupOrder.total };
+      db.addPaymentIntent(dupOrder.id, "online");
       await sendReply(phone, payCardPayload(dupObj));
       return res.json({ ok: true, reused: true, order: { id: dupOrder.id, total: dupOrder.total, subtotal: dupOrder.subtotal, deliveryFee: dupOrder.deliveryFee, waId: phone } });
     }
@@ -853,6 +908,8 @@ app.post("/api/checkout", wrap(async (req, res) => {
     updatedAt: t,
   };
   CHECKOUT_CACHE.set(cacheKey, { orderNo, at: Date.now() });
+  // One unique payment intent per order — recorded before any pay card is sent.
+  db.addPaymentIntent(orderNo, "online");
   // Push Pay Now straight to the customer's WhatsApp (native payment card if
   // WhatsApp Payments is enabled, otherwise paylink / pay page via CTA).
   const payCard = payCardPayload(orderObj);
@@ -888,7 +945,8 @@ function payCardPayload(order) {
   const body =
     `🧾 *Order #${order.id}* is ready for payment.\n\n` +
     buildOrderSummaryText(order) +
-    `\n\nTap *💳 Pay Now* below to pay securely.`;
+    `\n\nPay securely with *Google Pay, PhonePe, Paytm* or any UPI app.` +
+    `\nTap *💳 Pay Now* below to continue.`;
   if (WHATSAPP_PAYMENT && PAYMENT_RECEIVER && /^\d{10,15}$/.test(PAYMENT_RECEIVER)) {
     return {
       type: "pmt",
@@ -933,10 +991,19 @@ function paymentCardReply(orderNo, total) {
   return payCardPayload(order);
 }
 
-async function verifyPayment(orderNo, txnId, method) {
+async function verifyPayment(orderNo, txnId, method, amount) {
   const order = db.getOrderDetail(orderNo);
   if (!order) throw new Error("Order not found");
   if (order.paymentStatus === "Paid") return { ok: true, duplicate: true, order };
+  // A cancelled order can never be flipped to Paid by a late/false callback.
+  if (order.status === "cancelled") return { ok: false, duplicate: false, cancelled: true, order };
+  // Amount reconciliation: if the provider tells us what was paid, it MUST equal
+  // the order total. A mismatch is never recorded as paid.
+  if (amount != null) {
+    const paid = Math.round(Number(amount) * 100);
+    const expected = Math.round(Number(order.total) * 100);
+    if (paid !== expected) return { ok: false, duplicate: false, amountMismatch: { paid: Number(amount), expected: order.total }, order };
+  }
   db.updatePayment(orderNo, "Paid", method || "online", txnId);
   const after = db.getOrderDetail(orderNo);
   if (after.waId) {
@@ -951,23 +1018,31 @@ app.post("/api/payment/webhook", wrap(async (req, res) => {
     return res.status(503).json({ error: "Payment webhook not configured (PAYMENT_WEBHOOK_SECRET)" });
   }
   const b = req.body || {};
+  // Signature checks (accept any ONE of these):
+  //   1. x-zipra-signature = HMAC-SHA256(JSON.stringify(body), PAYMENT_WEBHOOK_SECRET)   ← preferred
+  //   2. x-webhook-secret = PAYMENT_WEBHOOK_SECRET (plain shared-secret header)
+  //   3. body.secret = PAYMENT_WEBHOOK_SECRET (legacy)
+  const hmacExpected = crypto.createHmac("sha256", PAYMENT_WEBHOOK_SECRET).update(JSON.stringify(b)).digest("hex");
+  const hmacOk = typeof req.headers["x-zipra-signature"] === "string" && req.headers["x-zipra-signature"].toLowerCase() === hmacExpected;
   const secret = req.headers["x-webhook-secret"] || b.secret || "";
-  if (secret !== PAYMENT_WEBHOOK_SECRET) {
+  if (!hmacOk && secret !== PAYMENT_WEBHOOK_SECRET) {
     return res.status(401).json({ error: "Unauthorized" });
   }
   const orderNo = String(b.order_no || b.orderId || "").trim();
   const status = String(b.status || "success").toLowerCase();
   const txnId = String(b.txn_id || b.transaction_id || "").trim() || `txn-${Date.now()}`;
+  const amount = b.amount != null ? Number(b.amount) : null;
   if (!orderNo) throw new Error("order_no required");
   const order = db.getOrderDetail(orderNo);
   if (!order) return res.status(404).json({ error: "Order not found" });
   if (status === "success" || status === "paid" || status === "captured") {
-    const r = await verifyPayment(orderNo, txnId, b.method);
+    const r = await verifyPayment(orderNo, txnId, b.method, amount);
     return res.json({ ok: true, ...r });
   }
   // failed / pending / refunded → record, never mark paid, never advance capture
   if (status === "failed" || status === "rejected" || status === "refunded") {
-    db.updatePayment(orderNo, "Failed", b.method || "online", txnId);
+    db.updatePayment(orderNo, status === "refunded" ? "Refunded" : "Failed", b.method || "online", txnId);
+    return res.json({ ok: true, status, order: db.getOrderDetail(orderNo) });
   }
   return res.json({ ok: true, status, order: db.getOrderDetail(orderNo) });
 }));
@@ -997,6 +1072,13 @@ app.post("/api/orders/:id/payment", adminAuth, wrap(async (req, res) => {
   const orderNo = req.params.id;
   const status = String(req.body && req.body.status || "Paid");
   const method = req.body.method || null;
+  // Paid/marked from the dashboard must follow the SAME path as a verified
+  // payment: mark order Paid AND kick off web delivery capture so the
+  // customer's WhatsApp continues (payment success → location → name → save).
+  if (["paid", "success", "captured"].includes(String(status).toLowerCase())) {
+    const r = await verifyPayment(orderNo, `admin-${Date.now()}`, method);
+    return res.json({ ok: true, ...r });
+  }
   const order = db.updatePayment(orderNo, status, method);
   res.json({ ok: true, order });
 }));

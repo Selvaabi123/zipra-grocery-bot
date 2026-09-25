@@ -22,11 +22,12 @@ let port = 0;
 let base = "";
 const seen = new Set();
 
-function api(method, path, body) {
+function api(method, path, body, extraHeaders) {
   const url = base + path;
   const opts = { method, headers: {} };
   let payload;
   opts.headers["Authorization"] = `Bearer ${process.env.ADMIN_TOKEN}`;
+  if (extraHeaders) Object.assign(opts.headers, extraHeaders);
   if (body !== undefined) {
     payload = JSON.stringify(body);
     opts.headers["Content-Type"] = "application/json";
@@ -255,6 +256,45 @@ async function main() {
   check("duplicate webhook is idempotent", wb2.body.duplicate === true && wb2.body.order.paymentStatus === "Paid", "=> " + JSON.stringify(wb2.body).slice(0, 60));
   const detW3 = await api("GET", `/api/orders/${webId}`);
   check("no double payment recorded", detW3.body.order.total === 105 && detW3.body.order.paymentStatus === "Paid");
+  check("payment ledger: pending intent + paid settlement (no double record)", (detW3.body.order.payments || []).length === 2 && detW3.body.order.payments.some((p) => p.status === "Pending" && p.transaction_id === null) && detW3.body.order.payments.some((p) => p.status === "Paid" && p.transaction_id === "txn-100"), "=> " + JSON.stringify(detW3.body.order.payments));
+
+  // A fresh checkout gets exactly ONE pending payment intent (unique txn per order).
+  const imco = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 1 }] });
+  const imId = imco.body.order.id;
+  const detIM = await api("GET", `/api/orders/${imId}`);
+  const pendIntents = (detIM.body.order.payments || []).filter((p) => p.status === "Pending");
+  check("checkout records one Pending payment intent", pendIntents.length === 1 && pendIntents[0].transaction_id === null, "=> " + JSON.stringify(detIM.body.order.payments));
+  const imco2 = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 1 }] });
+  check("retry reuses same order", imco2.body.reused === true && imco2.body.order.id === imId);
+  const detIM2 = await api("GET", `/api/orders/${imId}`);
+  check("retry never duplicates the payment intent", (detIM2.body.order.payments || []).filter((p) => p.status === "Pending").length === 1);
+
+  // HMAC-SHA256 signed webhook (no shared-secret in the payload).
+  const hmacBody = { order_no: imId, status: "success", txn_id: "txn-hmac", method: "online", amount: 105 };
+  const hmacSig = crypto.createHmac("sha256", "test-webhook-secret").update(JSON.stringify(hmacBody)).digest("hex");
+  const wbHmac = await api("POST", "/api/payment/webhook", hmacBody, { "x-zipra-signature": hmacSig });
+  check("HMAC-signed webhook authenticates", wbHmac.status === 200 && wbHmac.body.ok && wbHmac.body.duplicate === false, "=> " + JSON.stringify(wbHmac.body).slice(0, 80));
+  const wbHmacBad = await api("POST", "/api/payment/webhook", { ...hmacBody, txn_id: "txn-hmac-bad" }, { "x-zipra-signature": "deadbeef" });
+  check("forged/expired HMAC rejected", wbHmacBad.status === 401);
+
+  // Amount reconciliation: paid amount must equal the order total.
+  const mco = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 1 }] });
+  const mId = mco.body.order.id;
+  const wbAmt = await api("POST", "/api/payment/webhook", { order_no: mId, status: "success", txn_id: "txn-amt", amount: 999, secret: "test-webhook-secret" });
+  check("amount mismatch is rejected (never Paid)", wbAmt.body.ok === false && wbAmt.body.amountMismatch && wbAmt.body.amountMismatch.expected === 105, "=> " + JSON.stringify(wbAmt.body).slice(0, 120));
+  const detM = await api("GET", `/api/orders/${mId}`);
+  check("order stays Pending after amount mismatch", detM.body.order.paymentStatus === "Pending");
+  const wbAmtOk = await api("POST", "/api/payment/webhook", { order_no: mId, status: "success", txn_id: "txn-amt-ok", amount: 105, secret: "test-webhook-secret" });
+  check("matching amount marks Paid + records provider txn", wbAmtOk.body.ok && wbAmtOk.body.order.paymentStatus === "Paid" && wbAmtOk.body.order.payments.some((p) => p.status === "Paid" && p.transaction_id === "txn-amt-ok"));
+
+  // Admin "Mark Paid" goes through the SAME verification path (Paid + capture).
+  const coWeb3 = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 1 }] });
+  const webId3 = coWeb3.body.order.id;
+  check("web order 3 created for admin-pay test", !!webId3, "=> " + JSON.stringify(coWeb3.body).slice(0, 60));
+  const admPay = await api("POST", `/api/orders/${webId3}/payment`, { status: "Paid" });
+  check("admin mark paid persists", admPay.body.ok && admPay.body.order.paymentStatus === "Paid", "=> " + JSON.stringify(admPay.body).slice(0, 80));
+  const admPay2 = await api("POST", `/api/orders/${webId3}/payment`, { status: "Paid" });
+  check("admin mark paid idempotent (no double record)", admPay2.body.ok === true && admPay2.body.duplicate === true, "=> " + JSON.stringify(admPay2.body).slice(0, 60));
 
   // failed payment callback never marks paid (different cart → distinct order)
   const coWeb2 = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 2 }] });
@@ -264,6 +304,88 @@ async function main() {
   check("payment webhook records failure", wbFail.body.o === undefined || true);
   const detF = await api("GET", `/api/orders/${webId2}`);
   check("failed payment stays Pending/Failed (never Paid)", detF.body.order.paymentStatus === "Failed");
+  const rtc = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 2 }] });
+  check("retry after failure reuses same order (no duplicate)", rtc.body.reused === true && rtc.body.order.id === webId2, "=> " + JSON.stringify(rtc.body).slice(0, 80));
+
+  /* ---------------- NATIVE WHATSAPP PAYMENTS WEBHOOK (statuses[].type="payment") ---------------- */
+  const ts = () => String(Math.floor(Date.now() / 1000));
+  const natPay = (id, status, ref, amount, txn) => ({
+    entry: [{
+      changes: [{
+        value: {
+          messaging_product: "whatsapp",
+          contacts: [{ wa_id: waCust }],
+          statuses: [{
+            id, type: "payment", status, timestamp: ts(),
+            payment: { reference_id: ref, amount: { value: amount * 100, offset: 100 }, currency: "INR", transaction: { id: txn || null, type: "upi", status: "success" } },
+          }],
+        },
+      }],
+    }],
+  });
+
+  const ndco = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 2 }] });
+  const ndId = ndco.body.order.id;
+  const natOk = await api("POST", "/webhook", natPay(`pay-ok-${ts()}`, "captured", ndId, 170, "nupi-ok"));
+  check("native captured status accepted", natOk.status === 200, "=> status " + natOk.status);
+  const detND = await api("GET", `/api/orders/${ndId}`);
+  check("native payment marks Paid with PG txn", detND.body.order.paymentStatus === "Paid" && detND.body.order.payments.some((p) => p.status === "Paid" && p.transaction_id === "nupi-ok"));
+
+  // duplicate native status (same status id) is deduped
+  const ndup = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 2 }] });
+  const ndupId = ndup.body.order.id;
+  const dupId = `pay-dup-${ts()}`;
+  await api("POST", "/webhook", natPay(dupId, "captured", ndupId, 170, "nupi-dup"));
+  await api("POST", "/webhook", natPay(dupId, "captured", ndupId, 170, "nupi-dup"));
+  const detNDup = await api("GET", `/api/orders/${ndupId}`);
+  check("duplicate native status ignored (single payment record)", (detNDup.body.order.payments || []).filter((p) => p.status === "Paid").length === 1);
+
+  // native failure → never Paid; a later captured retry IS honored
+  const nfco = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 1 }] });
+  const nfId = nfco.body.order.id;
+  await api("POST", "/webhook", natPay(`pay-fail-${ts()}`, "failed", nfId, 105, null));
+  const detNF = await api("GET", `/api/orders/${nfId}`);
+  check("native failed → order not Paid", detNF.body.order.paymentStatus === "Failed");
+  await api("POST", "/webhook", natPay(`pay-retry-${ts()}`, "captured", nfId, 105, "nupi-retry"));
+  const detNF2 = await api("GET", `/api/orders/${nfId}`);
+  check("retry after native failure marks Paid", detNF2.body.order.paymentStatus === "Paid" && detNF2.body.order.payments.some((p) => p.status === "Paid" && p.transaction_id === "nupi-retry"));
+
+  // native amount must reconcile too
+  const naco = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 1 }] });
+  const naId = naco.body.order.id;
+  await api("POST", "/webhook", natPay(`pay-amt-${ts()}`, "captured", naId, 999, "nupi-amt"));
+  const detNA = await api("GET", `/api/orders/${naId}`);
+  check("native wrong amount never marks Paid", detNA.body.order.paymentStatus === "Pending");
+
+  // unknown reference is ignored gracefully (no crash, no state change)
+  const nunk = await api("POST", "/webhook", natPay(`pay-unk-${ts()}`, "captured", "NOPE8800000", 105, null));
+  check("unknown native reference ignored safely", nunk.status === 200);
+
+  // legacy message-level interactive payment (WhatsApp Pay callback)
+  const lsco = await api("POST", "/api/checkout", { token, items: [{ productId: ponni.id, qty: 1 }] });
+  const lsId = lsco.body.order.id;
+  const legacy = {
+    entry: [{
+      changes: [{
+        value: {
+          messaging_product: "whatsapp",
+          messages: [{
+            from: waCust, id: `m-legacy-${ts()}`, timestamp: ts(), type: "interactive",
+            interactive: {
+              type: "payment",
+              payment: {
+                reference_id: lsId, transaction_id: "nupi-legacy", transaction_type: "upi",
+                total_amount: { value: 10500, offset: 100 }, currency: "INR", status: "success",
+              },
+            },
+          }],
+        },
+      }],
+    }],
+  };
+  await api("POST", "/webhook", legacy);
+  const detLS = await api("GET", `/api/orders/${lsId}`);
+  check("legacy interactive payment message marks Paid", detLS.body.order.paymentStatus === "Paid" && detLS.body.order.payments.some((p) => p.transaction_id === "nupi-legacy"));
 
   // simulator gated by env flag
   process.env.PAYMENT_SIMULATOR = "0";
@@ -279,6 +401,10 @@ async function main() {
   check("pay page served with order", payPg.status === 200 && payPg.raw.includes(webId));
   check("pay page offers UPI deep link", payPg.raw.includes("upi://pay?pa=zipratest@okhdfcbank") && payPg.raw.includes("am=105.00") && payPg.raw.includes("tr=zipra" + webId) && payPg.raw.includes("cu=INR"), "=> upi link missing");
   check("pay page has prominent Continue button", payPg.raw.includes("Continue to Pay"));
+  check("pay page has amount + order totals (never hardcoded)", payPg.raw.includes("AMOUNT TO PAY") && payPg.raw.includes("₹105") && payPg.raw.includes("₹65") && payPg.raw.includes("₹40"), "=> totals missing");
+  check("pay page lets user choose payment method", payPg.raw.includes("Choose payment method") && payPg.raw.includes("Pay using UPI") && payPg.raw.includes("Google Pay") && payPg.raw.includes("PhonePe") && payPg.raw.includes("Paytm"), "=> method selection missing");
+  check("pay page returns to WhatsApp", payPg.raw.includes("Return to WhatsApp") && payPg.raw.includes("wa.me/"), "=> wa return missing");
+  check("pay page embeds order+amount+upi-link via JSON", payPg.raw.includes("var order=") && payPg.raw.includes('"total":105') && payPg.raw.includes("var UPILINK=") && payPg.raw.includes("var WA="), "=> escaped vars missing");
   scriptsCompile(payPg.raw, "pay page");
 
   // STATUS: moving to out_for_delivery generates a delivery OTP + notifies

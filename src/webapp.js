@@ -205,33 +205,43 @@ fetch(BASE+"/api/store/catalog").then(function(r){return r.json();}).then(functi
 function payPage(base, order, opts) {
   opts = opts || {};
   const only = (n) => "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 });
-  const hasUpi = !!opts.upiLink;
+  const hasUpi = !!opts.upiLink || !!opts.upiId;
   const payLabel = hasUpi ? `Continue to Pay ${only(order.total)}` : opts.paymentLink ? "Continue to Payment" : "Continue";
+  const waNum = String(opts.waPhone || "").replace(/\D/g, "");
+  const rows = order.items.map((i) => `<div class="row"><span>${esc(i.item)} × ${i.qty} ${esc(i.unit)}</span><span>${only(i.subtotal)}</span></div>`).join("");
   return shell(
     `Pay Order ${order.id}`,
     `<style>
 .main{max-width:480px;margin:0 auto;padding:0 14px 40px}
-.hdr{background:linear-gradient(135deg,#16a34a 0%,#0f7a35 100%);color:#fff;padding:16px 16px 40px;border-radius:0 0 28px 28px}
+.hdr{background:linear-gradient(135deg,#ff7a18 0%,#ff4d00 60%,#e8470a 100%);color:#fff;padding:16px 16px 40px;border-radius:0 0 28px 28px}
 .hdr .top{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .hdr .logo{font-weight:800;font-size:20px;letter-spacing:.5px}
-.hdr .logo span{color:#c9f2d9}
+.hdr .logo span{color:#ffd9b8}
 .hdr .sub{font-size:12px;opacity:.92;margin-top:2px}
-.amount{background:#fff;border:1px solid var(--line);border-radius:20px;padding:18px;margin:-26px 0 14px;position:relative;text-align:center;box-shadow:0 8px 24px rgba(15,122,53,.12)}
+.amount{background:#fff;border:1px solid var(--line);border-radius:20px;padding:18px;margin:-26px 0 14px;position:relative;text-align:center;box-shadow:0 8px 24px rgba(255,107,0,.12)}
 .amount .lbl{font-size:12px;color:var(--muted);font-weight:600;letter-spacing:.3px}
-.amount .am{font-size:38px;font-weight:800;color:#0f7a35;line-height:1.1;margin:4px 0 2px}
+.amount .am{font-size:38px;font-weight:800;color:var(--brand);line-height:1.1;margin:4px 0 2px}
 .amount .ordNo{font-size:12.5px;color:var(--muted)}
 .card{background:#fff;border:1px solid var(--line);border-radius:18px;padding:16px;margin-bottom:12px;box-shadow:0 2px 8px rgba(0,0,0,.03)}
-.card h2{font-size:15px;margin:0 0 8px}
-.apps{display:flex;flex-wrap:wrap;gap:8px;margin-top:6px}
+.card h2{font-size:15px;margin:0 0 10px}
+.meth{display:flex;align-items:center;gap:12px;border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:10px;cursor:pointer;background:#fffdf9}
+.meth.on{border-color:var(--brand);background:var(--brand-lt)}
+.meth input{accent-color:var(--brand);width:18px;height:18px;flex:none}
+.meth .mi{font-size:20px}
+.meth b{font-size:14.5px;display:block}
+.meth em{font-size:12px;color:var(--muted);font-style:normal}
+.apps{display:flex;flex-wrap:wrap;gap:8px;margin:4px 0 2px}
 .app{border:1px solid var(--line);background:#fdfaf5;border-radius:12px;padding:8px 12px;font-size:12.5px;font-weight:700;color:#3a332b}
 .app .ic{opacity:.85;margin-right:4px}
 .paybtn{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;background:#25d366;color:#fff;border:none;border-radius:17px;padding:17px;font-size:17px;font-weight:800;cursor:pointer;box-shadow:0 8px 20px rgba(37,211,102,.35)}
 .paybtn:disabled{opacity:.45;box-shadow:none;cursor:not-allowed}
 .paybtn svg{flex:none}
 .note{font-size:12px;color:var(--muted);text-align:center;margin-top:10px;line-height:1.5}
-.upiid{display:flex;align-items:center;gap:8px;background:#fff;border:1px dashed #25d366;border-radius:14px;padding:12px;font-weight:700;color:#0f7a35;font-size:14px}
+.upiid{display:flex;align-items:center;gap:8px;background:#fff;border:1px dashed #25d366;border-radius:14px;padding:12px;font-weight:700;color:var(--brand);font-size:14px}
 .upiid button{margin-left:auto;border:none;background:#25d366;color:#fff;border-radius:9px;padding:8px 13px;font-weight:700;cursor:pointer}
-.tryaga{background:#fdeee7;border:1px solid #f1c9a8;color:#9c4010;border-radius:14px;padding:14px;margin:12px 0;font-size:14px;line-height:1.5}
+.ghostbtn{width:100%;margin-top:12px;background:#fff;border:1px solid var(--line);color:#54483a;border-radius:14px;padding:13px;font-size:15px;font-weight:700;cursor:pointer}
+.okb{background:var(--ok);border:1px solid #bcdcc7;color:var(--ok-in);border-radius:14px;padding:14px;margin:12px 0;font-size:14px;line-height:1.5}
+.errb{background:#fdeee7;border:1px solid #f1c9a8;color:#9c4010;border-radius:14px;padding:14px;margin:12px 0;font-size:14px;line-height:1.5}
 .payok{text-align:center;padding:26px 10px}
 .payok .chk{font-size:52px}
 .payok h2{font-size:19px;margin:10px 0 4px;color:#176b3a}
@@ -239,7 +249,7 @@ function payPage(base, order, opts) {
 </style>
 <header class="hdr">
   <div class="top">
-    <div><div class="logo">ZIPRA<span> Pay</span></div><div class="sub">Secure UPI payment · Order ${esc(order.id)}</div></div>
+    <div><div class="logo">ZIPRA<span> Pay</span></div><div class="sub">Secure payment · Order ${esc(order.id)}</div></div>
   </div>
 </header>
 <div class="main">
@@ -251,65 +261,103 @@ function payPage(base, order, opts) {
     </div>
     <div class="card">
       <h2>🧾 Order details</h2>
-      <div id="items">${order.items.map((i) => `<div class="row"><span>${esc(i.item)} × ${i.qty} ${esc(i.unit)}</span><span>${only(i.subtotal)}</span></div>`).join("")}</div>
+      ${rows}
       <div class="row"><span>Subtotal</span><span>${only(order.subtotal)}</span></div>
       <div class="row"><span>Delivery</span><span>${only(order.deliveryFee)}</span></div>
       <div class="row total"><span>Grand Total</span><span>${only(order.total)}</span></div>
     </div>
-    ${hasUpi
-      ? `<div class="card" style="padding:14px">
-          <div style="font-size:13px;font-weight:700;color:#3a332b">Pay with your preferred UPI app</div>
-          <div class="apps">
-            <span class="app"><span class="ic">🇺</span>Google Pay</span><span class="app"><span class="ic">🟣</span>PhonePe</span><span class="app"><span class="ic">🔴</span>Paytm</span><span class="app">➕ Any UPI app</span>
-          </div>
-        </div>`
-      : ""}
+    ${hasUpi || opts.paymentLink ? `<div class="card">
+        <h2>💳 Choose payment method</h2>
+        ${hasUpi ? `<label class="meth on" id="meth-upi"><input type="radio" name="pm" value="upi" checked><span class="mi">📲</span><span><b>Pay using UPI</b><em>Google Pay · PhonePe · Paytm · Any UPI app</em></span></label>` : ""}
+        ${opts.paymentLink ? `<label class="meth" id="meth-link"><input type="radio" name="pm" value="link"><span class="mi">💳</span><span><b>Card / NetBanking / Wallet</b><em>Secure gateway link</em></span></label>` : ""}
+      </div>` : ""}
+    ${hasUpi ? `<div class="card" style="padding:12px 16px">
+        <div style="font-size:13px;font-weight:700;color:#3a332b">You can pay with</div>
+        <div class="apps">
+          <span class="app"><span class="ic">📱</span>Google Pay</span><span class="app"><span class="ic">🟣</span>PhonePe</span><span class="app"><span class="ic">🔴</span>Paytm</span><span class="app">➕ Any UPI app</span>
+        </div>
+      </div>` : ""}
     <div id="status"></div>
     <div id="paybox">
-      <button class="paybtn" id="payBtn" onclick="tryPay()">${payLabel}</button>
+      <button class="paybtn" id="payBtn">${payLabel}</button>
       <div id="upiBox"></div>
-      <div class="note">After paying, return here automatically (or leave this page open) — we confirm your payment on WhatsApp when it's verified. No automatic deduction happens by tapping Continue.</div>
+      <div class="note">After paying, return here automatically (or leave this page open) — we confirm your payment on WhatsApp the moment it is verified. No automatic deduction happens by tapping Continue.</div>
+      <button class="ghostbtn" id="waBtn">⬅️ Done — Return to WhatsApp</button>
       ${opts.simulator ? `<div style="margin-top:12px"><button class="btn green" style="width:100%" onclick="sim()">Demo: Simulate verified payment</button></div>` : ""}
     </div>
   </div>
+  <div id="payok" style="display:none">
+    <div class="payok"><div class="chk">✅</div><h2>Payment Successful</h2><p>Amount <b>${only(order.total)}</b> received for Order <b>${esc(order.id)}</b>.<br>A confirmation and delivery setup are waiting in your WhatsApp chat 🧡</p><button class="ghostbtn" onclick="goWa()">⬅️ Done — Return to WhatsApp</button></div>
+  </div>
 </div>
 <script>
+function esc(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");}
 var BASE=${json(base)};
 var order=${json({ id: order.id, total: order.total })};
 var UPILINK=${json(opts.upiLink || "")};
 var LINK=${json(opts.paymentLink || "")};
 var UPI=${json(opts.upiId || "")};
-var started=false,startTs=0,paid=false,pendingMsgShown=0;
-function done(){
-  paid=true;
-  document.getElementById("paywrap").innerHTML=
-    '<div class="payok"><div class="chk">✅</div><h2>Payment Successful</h2><p>Amount <b>${only(order.total)}</b> received for Order <b>'+esc(order.id)+'</b>.<br>We\\'ve messaged you on WhatsApp to confirm your delivery details 🧡</p></div>';
-}
-function setStatus(html,cls,id){
-  var el=document.getElementById("status");
+var WA=${json(waNum)};
+var started=false,startTs=0,paid=false,pendingMsgShown=0,chosen="upi";
+function setStatus(html,cls){
   if(paid)return;
-  if(!id)id=cls;
-  el.className=id||"";
+  var el=document.getElementById("status");
+  el.className=cls||"";
   el.innerHTML=html;
 }
-function tryPay(){
-  if(paid)return;
-  if(UPILINK){started=true;startTs=Date.now();setStatus("⏳ Opening your UPI app… choose Google Pay, PhonePe, Paytm or another installed UPI app to complete the payment.","okb");document.getElementById("payBtn").disabled=true;location.href=UPILINK;
-    setTimeout(function(){document.getElementById("payBtn").disabled=false;},2500);
-  } else if(LINK){started=true;startTs=Date.now();window.open(LINK,"_blank","noopener");setStatus("⏳ You\'ll be taken to the payment page. Complete the payment there — we verify it automatically.","okb");}
-  else if(UPI){try{navigator.clipboard.writeText(UPI);}catch(e){}setStatus("💳 Pay <b>${only(order.total)}</b> to <b>"+esc(UPI)+"</b> (copied — paste in any UPI app). We\'ll verify the payment automatically once it arrives.","okb");}
-  else setStatus("No payment method is configured yet. Please contact ZIPRA on WhatsApp.","errb");
+function syncSel(){
+  var r=document.querySelector('input[name="pm"]:checked');
+  chosen=r?r.value:"upi";
+  var all=[].slice.call(document.querySelectorAll(".meth"));
+  all.forEach(function(m){m.className=m.id==="meth-"+chosen?"meth on":"meth";});
+}
+function ever(){
+  var ins=document.querySelectorAll(".meth input");
+  for(var i=0;i<ins.length;i++){ins[i].addEventListener("change",syncSel);}
+}
+function done(){
+  paid=true;
+  document.getElementById("paywrap").style.display="none";
+  document.getElementById("payok").style.display="block";
+}
+function goWa(){
+  var t="Hi ZIPRA! I paid for Order "+order.id+" 💳 Please confirm.";
+  if(WA){location.href="https://wa.me/"+WA+"?text="+encodeURIComponent(t);}
 }
 function sim(){
   if(paid)return;
   fetch(BASE+"/api/payment/simulate/"+encodeURIComponent(order.id),{method:"POST"}).then(function(r){return r.json();}).then(function(d){if(d.ok)done();else alert(d.error||"Simulator disabled (PAYMENT_SIMULATOR=1).");}).catch(function(){alert("Simulator request failed.");});
+}
+function tryPay(){
+  if(paid)return;
+  var btn=document.getElementById("payBtn");
+  if(chosen==="link"&&LINK){
+    started=true;startTs=Date.now();btn.disabled=true;
+    setStatus("⏳ Opening the payment page… complete it there. We verify it automatically.","okb");
+    window.open(LINK,"_blank","noopener");
+    setTimeout(function(){btn.disabled=false;},2500);
+    return;
+  }
+  if(UPILINK){
+    started=true;startTs=Date.now();btn.disabled=true;
+    setStatus("⏳ Opening your UPI app… choose Google Pay, PhonePe, Paytm or another installed UPI app.","okb");
+    location.href=UPILINK;
+    setTimeout(function(){btn.disabled=false;},2500);
+    return;
+  }
+  if(UPI){
+    try{navigator.clipboard.writeText(UPI);}catch(e){}
+    setStatus("💳 Pay <b>"+String(order.total)+"</b> to <b>"+esc(UPI)+"</b> (copied — paste in any UPI app). We verify automatically once it arrives.","okb");
+    return;
+  }
+  setStatus("No payment method is configured yet. Please contact ZIPRA on WhatsApp.","errb");
 }
 function checkStatus(){
   fetch(BASE+"/api/store/order/"+encodeURIComponent(order.id)).then(function(r){return r.json();}).then(function(d){
     if(d.order&&d.order.paymentStatus==="Paid"){done();return;}
     if(started){
       var ago=Date.now()-startTs;
-      if(ago>4000&&ago<30000&&!pendingMsgShown){pendingMsgShown=Date.now();setStatus("⏳ Payment is being processed… we\'ll confirm on WhatsApp the moment it\'s verified.","okb");}
+      if(ago>4000&&ago<30000&&!pendingMsgShown){pendingMsgShown=Date.now();setStatus("⏳ Payment is being processed… we will confirm on WhatsApp the moment it is verified.","okb");}
       else if(ago>=30000){
         if(pendingMsgShown&&Date.now()-pendingMsgShown<20000)return;
         setStatus("⚠️ Payment was <b>not completed</b> (cancelled or yet to be verified). No money has been deducted. Tap below to <b>Try Payment Again</b>.","errb");
@@ -323,9 +371,14 @@ document.addEventListener("visibilitychange",function(){
   if(document.visibilityState==="visible"&&started&&!paid)setTimeout(function(){checkStatus();},2200);
 });
 window.addEventListener("focus",function(){if(started&&!paid)setTimeout(function(){checkStatus();},2200);});
+document.getElementById("payBtn").addEventListener("click",tryPay);
+document.getElementById("waBtn").addEventListener("click",goWa);
+ever();
 if(!UPILINK&&!LINK&&UPI){
-  document.getElementById("upiBox").innerHTML='<div class="upiid" style="margin-top:10px"><span>'+esc(UPI)+'</span><button onclick="navigator.clipboard&&navigator.clipboard.writeText(\\''+esc(UPI)+'\\');this.textContent=\\'Copied\\';">Copy</button></div>';
+  document.getElementById("upiBox").innerHTML='<div class="upiid" style="margin-top:10px"><span>'+esc(UPI)+'</span><button>Copy</button></div>';
+  document.getElementById("upiBox").querySelector("button").addEventListener("click",function(){if(navigator.clipboard){navigator.clipboard.writeText(UPI);}this.textContent="Copied";});
 }
+if(!WA){var wb=document.getElementById("waBtn");if(wb)wb.style.display="none";}
 </script>`
   );
 }

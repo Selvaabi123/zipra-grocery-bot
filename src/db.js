@@ -779,6 +779,24 @@ function updateOrderStatus(orderNo, status, by) {
   return { ...order, status, paymentStatus: status === "cancelled" ? "Cancelled" : status === "delivered" && order.paymentStatus !== "Paid" ? "Paid" : order.paymentStatus };
 }
 
+/* Creates a unique, pending payment intent for an order. Idempotent: an order
+   never gets a second Pending/Paid intent while one already exists, so every
+   checkout → Pay Now maps to exactly one payment transaction. */
+function addPaymentIntent(orderNo, method, amount) {
+  const row = findOrderNo(orderNo);
+  if (!row) throw new Error("Order not found: " + orderNo);
+  const order = orderFields(row);
+  const t = now();
+  const existing = db
+    .prepare("SELECT id FROM payments WHERE order_id = ? AND status IN ('Pending','Paid')")
+    .get(row.id);
+  if (existing) return getOrderDetail(orderNo);
+  db.prepare(
+    "INSERT INTO payments(order_id, amount, method, status, created_at) VALUES(?, ?, ?, 'Pending', ?)"
+  ).run(row.id, amount != null ? amount : order.total, method || "online", t);
+  return getOrderDetail(orderNo);
+}
+
 function updatePayment(orderNo, paymentStatus, method, txnId) {
   const row = findOrderNo(orderNo);
   if (!row) throw new Error("Order not found: " + orderNo);
@@ -1288,6 +1306,7 @@ module.exports = {
   listOrders,
   getOrderDetail,
   updateOrderStatus,
+  addPaymentIntent,
   updatePayment,
   assignPartner,
   updateOrder,

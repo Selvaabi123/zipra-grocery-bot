@@ -85,7 +85,14 @@ Open `http://localhost:3000/admin` (or `https://<your-server>/admin`)
 `cancelled 🔴` (anytime before delivered)
 
 ## Online payment
-Optional: set `PAYMENT_UPI_ID` (and optionally `PAYMENT_LINK`) in `.env`. Bot sends `upi://pay` + pay link with amount & order no. Payment status starts `Pending`; admin marks `Paid` after actual verification (never auto-marked).
+`PAYMENT_UPI_ID` (`yourstore@upi`) turns "Pay Now" into a **WhatsApp-style checkout**: an in-app page (`/pay/<order>`) with the order summary, a payment-method selector (UPI / Card / NetBanking / Wallet when a `PAYMENT_LINK` is set), a "Continue to Pay" button that opens the phone's UPI app chooser (Google Pay / PhonePe / Paytm / any UPI app) with the exact amount and a unique `tr=zipra<orderNo>` reference, plus a "Done — Return to WhatsApp" handoff.
+
+**Verification (server-side only):**
+- Every checkout creates a **unique pending payment intent** (never duplicated on retry).
+- Success requires a verified callback to `/api/payment/webhook` (HMAC `x-zipra-signature` header, or `secret`), whose **amount must exactly match the order total** and whose `txn_id` is recorded. States: `Pending / Paid / Failed / Cancelled / Refunded`; duplicate callbacks are idempotent.
+- Meta's **native WhatsApp Payments** callbacks are already understood: `statuses[].type == "payment"` (with `payment.reference_id` = order no) and legacy message-level payment callbacks — captured → Paid, failed → Failed (retry allowed), refunded → Refunded, pending → stays pending. This works as soon as Meta enables WhatsApp Payments on the number (see `.env.example`): business verification + gateway onboarding (Razorpay / PayU / BillDesk / Zaakpay). Until then, `WHATSAPP_PAYMENT`/`PAYMENT_RECEIVER` are honored as a fallback and the chat card falls back to the `/pay` page.
+- No PINs are ever handled; secrets live only in `.env` (gitignored).
+- `PAYMENT_SIMULATOR=1` (demo only) enables `/api/payment/simulate/<order>` for local testing; it never runs in production.
 
 ## Delivery location
 During checkout the customer can share a WhatsApp 📍 (location message) — no typing needed. The order stores lat/lng and the admin panel + customer receipt show a Google Maps link.
