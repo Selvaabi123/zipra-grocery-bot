@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff8a3d"/>
+      <stop offset="1" stop-color="#e8590c"/>
+    </linearGradient>
+    <linearGradient id="basket" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffe1c2"/>
+      <stop offset="1" stop-color="#ffc493"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="140" fill="url(#bg)"/>
+  <circle cx="512" cy="360" r="250" fill="#ffffff" opacity="0.14"/>
+  <circle cx="512" cy="360" r="200" fill="#ffffff" opacity="0.10"/>
+  <text x="512" y="230" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="92" font-weight="800" fill="#fff" text-anchor="middle" letter-spacing="6">ZIPRA</text>
+  <rect x="302" y="300" width="420" height="330" rx="52" fill="url(#basket)" stroke="#fff" stroke-width="10"/>
+  <path d="M340 360 L360 620 Q366 668 414 668 L610 668 Q658 668 664 620 L684 360 Z" fill="#e8590c" opacity="0.92"/>
+  <circle cx="430" cy="380" r="30" fill="#fff"/>
+  <circle cx="512" cy="380" r="30" fill="#fff"/>
+  <circle cx="594" cy="380" r="30" fill="#fff"/>
+  <circle cx="360" cy="420" r="22" fill="#fff" opacity="0.85"/>
+  <circle cx="664" cy="420" r="22" fill="#fff" opacity="0.85"/>
+  <path d="M410 700 L614 700" stroke="#fff" stroke-width="14" stroke-linecap="round"/>
+  <text x="512" y="808" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="66" font-weight="700" fill="#fff" text-anchor="middle">Fresh Groceries,</text>
+  <text x="512" y="892" font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="66" font-weight="700" fill="#ffe1c2" text-anchor="middle">Delivered to Your Door 🧡</text>
+</svg>

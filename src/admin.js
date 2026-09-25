@@ -949,6 +949,10 @@ function orderDetailBoxes(o){
         '<div class="cbox" style="margin-top:14px"><h4>'+IC.delivery+' Order Actions</h4>'+
           '<div style="display:flex;flex-direction:column;gap:9px;align-items:stretch">'+
             nextBtn+paidBtn+waBtn+
+            (o.status==='out_for_delivery'?
+              '<button class="btn ghost" data-act="delivery-otp" data-arg="'+esc(o.id)+'">🔐&nbsp;Resend Delivery OTP</button>'+
+              '<button class="btn ghost" data-act="verify-otp" data-arg="'+esc(o.id)+'">✅&nbsp;Verify Delivery OTP</button>'
+              :'')+
             '<button class="btn ghost" data-act="assign" data-arg="'+esc(o.id)+'">'+IC.delivery+'&nbsp;Assign Delivery</button>'+
             '<button class="btn ghost" data-act="edit" data-arg="'+esc(o.id)+'">'+IC.edit+'&nbsp;Edit Order</button>'+
             '<button class="btn" data-act="copy" data-arg="'+esc(o.id)+'">'+IC.clipboard+'&nbsp;Copy Order ID</button>'+
@@ -1750,6 +1754,28 @@ function handleAct(act,arg,ctx){
       api('/api/orders/'+arg+'/payment',{method:'POST',body:{status:'Paid'}})
         .then(function(){toast('Marked as Paid');afterOrderChange();})
         .catch(function(e){toast((e.message||'Update failed'),'err');});
+      break;
+    case 'delivery-otp':
+      api('/api/orders/'+arg+'/delivery-otp',{method:'POST'})
+        .then(function(d){toast(d.sent?'Delivery OTP resent to customer':'OTP not sent');afterOrderChange();})
+        .catch(function(e){toast((e.message||'Could not resend OTP'),'err');});
+      break;
+    case 'verify-otp':
+      {
+        var body='<div class="f-group"><label>Customer's delivery OTP (6 digits)</label><input id="vo-otp" inputmode="numeric" maxlength="6" placeholder="000000"></div>'+
+          '<div class="t-sub">The OTP is verified on the server. On success the order is marked <b>Delivered</b> and the customer is notified automatically.</div>';
+        var foot='<button class="btn" data-mb="x">Cancel</button><button class="btn primary" data-mb="vo-go">'+IC.check+'&nbsp;Verify &amp; Deliver</button>';
+        openDrawer({
+          title:'Verify Delivery',sub:'Order '+esc(arg),icon:IC.delivery,body:body,foot:foot,slim:true,
+          cb:function(id){
+            if(id!=='vo-go')return;
+            var code=document.getElementById('vo-otp').value.trim();
+            api('/api/delivery/verify-otp',{method:'POST',body:{order_no:arg,otp:code}})
+              .then(function(){toast('✅ Delivered & customer notified');afterOrderChange();})
+              .catch(function(e){toast((e.message||'❌ Invalid OTP'),'err');});
+          }
+        });
+      }
       break;
     case 'cancel':
       conf('Cancel order '+arg+'? Stock will be restored.').then(function(yes){

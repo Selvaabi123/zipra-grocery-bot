@@ -1,8 +1,12 @@
 require("dotenv").config();
 const express = require("express");
-const { handleMessage, cleanupExpiredSessions } = require("./bot");
+const path = require("path");
+const crypto = require("crypto");
+const { handleMessage, cleanupExpiredSessions, beginWebDeliveryCapture, deliveryReviewReply } = require("./bot");
 const db = require("./db");
 const { request } = require("./net");
+const webapp = require("./webapp");
+const shoplink = require("./shoplink");
 
 const app = express();
 app.use(express.json());
@@ -13,6 +17,88 @@ const WHATSAPP_TOKEN = process.env.WHATSAPP_TOKEN;
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const GRAPH_URL = "https://graph.facebook.com/v26.0";
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || "";
+const WEB_APP_URL = String(process.env.WEB_APP_URL || `http://localhost:${PORT}`).replace(/\/+$/, "");
+const PAYMENT_WEBHOOK_SECRET = String(process.env.PAYMENT_WEBHOOK_SECRET || "");
+const PAYMENT_SIMULATOR = String(process.env.PAYMENT_SIMULATOR || "");
+const PAYMENT_UPI_ID = String(process.env.PAYMENT_UPI_ID || "");
+const PAYMENT_LINK = String(process.env.PAYMENT_LINK || "").trim();
+const WHATSAPP_PAYMENT = String(process.env.WHATSAPP_PAYMENT || "").trim() === "1";
+const PAYMENT_RECEIVER = String(process.env.PAYMENT_RECEIVER || "").replace(/[^\d]/g, "");
+const OTP_SECRET = String(process.env.DELIVERY_OTP_SECRET || (PAYMENT_WEBHOOK_SECRET || "zipra-otp-pepper-dev"));
+
+function buildPayLink(orderNo, total) {
+  if (!PAYMENT_LINK) return "";
+  const sep = PAYMENT_LINK.includes("?") ? "&" : "?";
+  return `${PAYMENT_LINK}${sep}amount=${Number(total || 0)}&order=${encodeURIComponent(orderNo)}`;
+}
+
+/* Native UPI deep link. Opens the phone's UPI app chooser (Google Pay,
+   PhonePe, Paytm, …) with the exact amount + ZIPRA order reference baked in.
+   Payment is ONLY ever confirmed server-side via the gateway webhook. */
+function buildUpiLink(order) {
+  if (!PAYMENT_UPI_ID) return "";
+  const amt = Number(order.total || 0).toFixed(2);
+  const ref = String(order.id || "").replace(/[^A-Za-z0-9-]/g, "");
+  const enc = (s) => encodeURIComponent(s).replace(/%40/g, "@");
+  return (
+    "upi://pay?pa=" + enc(PAYMENT_UPI_ID) +
+    "&pn=" + enc("ZIPRA Grocery") +
+    "&am=" + amt +
+    "&cu=INR" +
+    "&tn=" + enc("ZIPRA Order " + ref) +
+    "&tr=" + enc("zipra" + ref)
+  );
+}
+
+const BUSINESS_PHONE = String(process.env.BUSINESS_PHONE || "").replace(/[^\d]/g, "");
+let cachedBusinessPhone = BUSINESS_PHONE || "";
+let businessPhoneFetchedAt = 0;
+/* WhatsApp number that customers chat with — used to deep-link them back to
+   the chat ("wa.me/…") after checkout so they can tap Pay Now. Auto-fetched
+   once from Graph API and cached for an hour; override with BUSINESS_PHONE. */
+async function getBusinessPhone() {
+  if (cachedBusinessPhone) return cachedBusinessPhone;
+  if (Date.now() - businessPhoneFetchedAt < 3600000) return "";
+  businessPhoneFetchedAt = Date.now();
+  try {
+    const r = await request(`${GRAPH_URL}/${PHONE_NUMBER_ID}?fields=display_phone_number`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${WHATSAPP_TOKEN}` },
+      timeout: 6000,
+      retries: 1,
+    });
+    if (r.status === 200 && r.text) {
+      const j = JSON.parse(r.text);
+      if (j.display_phone_number) cachedBusinessPhone = String(j.display_phone_number).replace(/\D/g, "");
+    }
+  } catch (e) {
+    console.error("getBusinessPhone error:", e.message);
+  }
+  return cachedBusinessPhone;
+}
+
+function webUrl(pathname) {
+  return WEB_APP_URL + (pathname || "");
+}
+
+function fmtMoney(n) {
+  return `₹${Number(n || 0).toLocaleString("en-IN")}`;
+}
+
+function genOtp() {
+  return crypto.randomInt(0, 1000000).toString().padStart(6, "0");
+}
+
+function otpHash(orderNo, otp) {
+  return crypto.createHmac("sha256", OTP_SECRET).update(`${orderNo}:${otp}`).digest("hex");
+}
+
+function otpMatches(orderNo, storedHash, otp) {
+  if (!storedHash || !/^\d{6}$/.test(String(otp || "").trim())) return false;
+  const given = Buffer.from(otpHash(orderNo, String(otp).trim()));
+  const stored = Buffer.from(storedHash);
+  return given.length === stored.length && crypto.timingSafeEqual(given, stored);
+}
 
 const processedMessageIds = new Set();
 const MSG_ID_TTL = 1000 * 60 * 60;
@@ -66,21 +152,84 @@ function buildReplyPayload(to, reply) {
       type: "interactive",
       interactive: {
         type: "list",
+        header: reply.headerText
+          ? { type: "text", text: String(reply.headerText).slice(0, 60) }
+          : undefined,
         body: { text: reply.body },
+        footer: reply.footer ? { text: String(reply.footer).slice(0, 60) } : undefined,
         action: { button: reply.button, sections: reply.sections },
       },
     };
   }
   if (reply.type === "buttons") {
+    const interactive = {
+      type: "button",
+      header:
+        reply.headerImage
+          ? { type: "image", image: { link: reply.headerImage } }
+          : reply.headerText
+            ? { type: "text", text: String(reply.headerText).slice(0, 60) }
+            : undefined,
+      body: { text: reply.body },
+      footer: reply.footer ? { text: String(reply.footer).slice(0, 60) } : undefined,
+      action: { buttons: reply.buttons.map((b) => ({ type: "reply", reply: { id: b.id, title: b.title } })) },
+    };
+    return {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "interactive",
+      interactive,
+    };
+  }
+  if (reply.type === "image") {
+    return {
+      messaging_product: "whatsapp",
+      to,
+      type: "image",
+      image: { link: reply.imageLink },
+      caption: reply.body,
+    };
+  }
+  if (reply.type === "cta") {
+    const b = reply.buttons && reply.buttons[0] || { title: "Open", url: "#" };
     return {
       messaging_product: "whatsapp",
       recipient_type: "individual",
       to,
       type: "interactive",
       interactive: {
-        type: "button",
+        type: "cta_url",
+        header: reply.headerText ? { type: "text", text: String(reply.headerText).slice(0, 60) } : undefined,
         body: { text: reply.body },
-        action: { buttons: reply.buttons.map((b) => ({ type: "reply", reply: { id: b.id, title: b.title } })) },
+        footer: reply.footer ? { text: String(reply.footer).slice(0, 60) } : undefined,
+        action: {
+          name: "cta_url",
+          parameters: {
+            display_text: String(b.title).slice(0, 25),
+            url: String(b.url).slice(0, 2000),
+          },
+        },
+      },
+    };
+  }
+  if (reply.type === "pmt") {
+    const paise = Math.round(Number(reply.amount || 0) * 100);
+    return {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "pmt_request",
+        action: {
+          currency: "INR",
+          total_amount: { value: paise, offset: 100 },
+          receiver: PAYMENT_RECEIVER,
+          reference: String(reply.orderNo || "").slice(0, 40),
+        },
+        body: { text: reply.body },
+        footer: reply.footer ? { text: String(reply.footer).slice(0, 60) } : undefined,
       },
     };
   }
@@ -179,7 +328,11 @@ async function sendMessage(to, body) {
 }
 
 function sendReply(to, reply) {
-  return sendMessage(to, buildReplyPayload(to, reply));
+  const sends =
+    Array.isArray(reply)
+      ? reply.map((r) => sendMessage(to, buildReplyPayload(to, r)))
+      : [sendMessage(to, buildReplyPayload(to, reply))];
+  return Promise.allSettled(sends).then((rs) => rs.every((r) => r.status === "fulfilled" && r.value));
 }
 
 function sendText(to, text) {
@@ -193,22 +346,45 @@ function sendText(to, text) {
 
 const STATUS_NOTIFICATION = {
   confirmed:
-    "✅ *Order Update*\n\nOrder #<ID>\n\nYour order has been confirmed.\n\n📦 *Status*\nConfirmed\n\nWe'll keep you updated here. 🧡",
+    "🛍 *ZIPRA Order Update*\n\nOrder #<ID>\n\n🟢 Your order has been confirmed.\n\nWe'll notify you when it starts getting ready. 🧡",
   preparing:
-    "👨‍🍳 *Order Update*\n\nOrder #<ID>\n\nYour order is being prepared.\n\n📦 *Status*\nPreparing\n\nWe'll keep you updated here. 🧡",
-  out_for_delivery:
-    "🛵 *Order Update*\n\nOrder #<ID>\n\nYour order is on the way!\n\n📦 *Status*\nOut for Delivery\n\nPlease keep your phone available for delivery. 🧡",
+    "🛍 *ZIPRA Order Update*\n\nOrder #<ID>\n\n🟠 Your order is now being prepared.\n\nWe'll notify you when it is out for delivery.",
   delivered:
-    "🎉 *Order Delivered!*\n\nOrder #<ID>\n\nYour order has been delivered successfully.\n\nThank you for shopping with ZIPRA! 🧡",
+    "✅ *Order Delivered*\n\nOrder #<ID>\n\nYour ZIPRA order has been delivered successfully.\n\nThank you for shopping with ZIPRA. 🛍️",
   cancelled:
     "❌ *Order Update*\n\nOrder #<ID>\n\nYour order has been cancelled.\n\nIf you need help, contact us on WhatsApp. 🧡",
 };
 
+/* Sends the WhatsApp status notification for an order (deduping happens at the
+   route level — we only dispatch here for *new* transitions or explicit resend). */
 async function notifyStatus(order) {
-  if (STATUS_NOTIFICATION[order.status]) {
-    const msg = STATUS_NOTIFICATION[order.status].replace("<ID>", order.id);
+  if (!order || !order.waId) return false;
+  const key = order.status;
+
+  if (key === "out_for_delivery") {
+    const otp = genOtp();
+    db.setDeliveryOtp(order.id, otpHash(order.id, otp));
+    const msg =
+      `🛵 Your ZIPRA order is out for delivery!\n\n` +
+      `Order #${order.id}\n\n` +
+      `Your delivery partner is on the way.\n\n` +
+      `🔐 Delivery verification is required.\n\n` +
+      `Your 6-digit delivery OTP is:\n\n${otp}\n\n` +
+      `Share it only with your delivery partner.`;
     await sendText(order.waId, msg);
+    return true;
   }
+
+  if (STATUS_NOTIFICATION[key]) {
+    const msg = STATUS_NOTIFICATION[key].replace(/<ID>/g, order.id);
+    await sendText(order.waId, msg);
+    if (key === "delivered") {
+      await sendReply(order.waId, deliveryReviewReply());
+    }
+    return true;
+  }
+
+  return false;
 }
 
 const RELAY_TUNNEL_URL = process.env.RELAY_TUNNEL_URL || "";
@@ -243,6 +419,29 @@ app.post("/webhook", async (req, res) => {
         for (const st of statuses) {
           const err = st.error && (st.error.message || st.error.code);
           console.log(`[webhook] status ${st.id || "?"} -> ${st.status}${err ? " error=" + String(err).slice(0, 80) : ""}`);
+        }
+      }
+      const payments = value.payments;
+      if (Array.isArray(payments) && payments.length) {
+        for (const p of payments) {
+          const amt = p.amount ? Number(p.amount.value) / Number(p.amount.offset || 100) : 0;
+          console.log(`[webhook] payment ${p.id || "?"} -> ${p.status} from ${p.sender || "?"} amount ${fmtMoney(amt)}`);
+          if (p.status !== "completed") continue;
+          const sender = String(p.sender || "").replace(/[^\d]/g, "");
+          jobs.push(
+            (async () => {
+              try {
+                const order = findPendingOrderByWaAndAmount(sender, amt);
+                if (!order) {
+                  console.log("[webhook] payment completed but no matching pending order", sender, amt);
+                  return;
+                }
+                await verifyPayment(order.id, p.id || `wa-pay-${Date.now()}`, "whatsapp");
+              } catch (e) {
+                console.error("[webhook] payment verification error:", e.message);
+              }
+            })()
+          );
         }
       }
       const msgs = value.messages;
@@ -444,12 +643,354 @@ app.post("/api/orders/:id/status", adminAuth, wrap(async (req, res) => {
   const status = String(req.body && req.body.status || "").toLowerCase();
   const order = db.getOrderDetail(orderNo);
   if (!order) return res.status(404).json({ error: "Order not found" });
+  const changed = order.status !== status;
   const updated = db.updateOrderStatus(orderNo, status, "admin");
   let notified = false;
-  if (notifyOption(req.body)) {
+  // Notify only when the status actually changes (no duplicates for the same
+  // status). An explicit `notify:true` forces a resend.
+  if (changed || notifyOption(req.body)) {
     notified = await notifyStatus({ id: orderNo, waId: order.waId, status });
   }
-  res.json({ ok: true, notified, order: updated });
+  res.json({ ok: true, notified, statusChanged: changed, order: updated });
+}));
+
+/* Resend the delivery OTP (out for delivery only). Never returns the OTP to
+   the admin — it is only ever sent to the customer on WhatsApp. */
+app.post("/api/orders/:id/delivery-otp", adminAuth, wrap(async (req, res) => {
+  const order = db.getOrderDetail(req.params.id);
+  if (!order) return res.status(404).json({ error: "Order not found" });
+  if (order.status !== "out_for_delivery") {
+    return res.status(400).json({ error: "Order is not out for delivery" });
+  }
+  const otp = genOtp();
+  db.setDeliveryOtp(order.id, otpHash(order.id, otp));
+  const msg =
+    `🛵 Your ZIPRA order is out for delivery!\n\n` +
+    `Order #${order.id}\n\n` +
+    `🔐 Delivery verification is required.\n\n` +
+    `Your 6-digit delivery OTP is:\n\n${otp}\n\n` +
+    `Share it only with your delivery partner.`;
+  await sendText(order.waId, msg);
+  res.json({ ok: true, sent: true, waId: order.waId });
+}));
+
+/* Delivery partner / admin verifies the customer's OTP to complete delivery.
+   Server-side only; wrong OTP never reveals the correct one. */
+app.post("/api/delivery/verify-otp", adminAuth, wrap(async (req, res) => {
+  const b = req.body || {};
+  const orderNo = String(b.order_no || "").trim();
+  const order = db.getOrderDetail(orderNo);
+  if (!order) return res.status(404).json({ error: "Order not found" });
+  if (order.status !== "out_for_delivery") {
+    return res.status(400).json({ ok: false, error: "No active OTP for this order" });
+  }
+  const stored = db.getDeliveryOtpHash(orderNo);
+  if (!stored) {
+    return res.status(400).json({ ok: false, error: "No OTP generated for this order" });
+  }
+  if (!otpMatches(orderNo, stored, b.otp)) {
+    return res.status(400).json({ ok: false, error: "❌ Invalid OTP" });
+  }
+  db.markDeliveryOtpUsed(orderNo);
+  const updated = db.updateOrderStatus(orderNo, "delivered", "delivery-otp");
+  await notifyStatus({ id: orderNo, waId: order.waId, status: "delivered" });
+  res.json({ ok: true, order: updated });
+}));
+
+/* ------------------------- web shopping (public) ------------------------- */
+
+app.use("/assets", express.static(path.join(__dirname, "assets"), { maxAge: "1h" }));
+
+app.get("/shop", (req, res) => {
+  res.type("html").send(webapp.shopPage(WEB_APP_URL));
+});
+
+app.get("/pay/:orderNo", wrap(async (req, res) => {
+  const order = db.getOrderDetail(req.params.orderNo);
+  if (!order) return res.status(404).send(webapp.notFoundPage());
+  res.type("html").send(webapp.payPage(WEB_APP_URL, order, {
+    paymentLink: buildPayLink(order.id, order.total),
+    upiId: PAYMENT_UPI_ID,
+    upiLink: buildUpiLink(order),
+    simulator: PAYMENT_SIMULATOR === "1",
+  }));
+}));
+
+app.get("/review", (req, res) => {
+  res.type("html").send(webapp.reviewPage(WEB_APP_URL, req.query.order || ""));
+});
+
+app.get("/api/store/catalog", wrap(async (req, res) => {
+  const categories = db.categories().map((name) => {
+    const products = db.listProducts({ category: name, active: true }).map((p) => ({
+      id: p.id,
+      item: p.item,
+      unit: p.unit,
+      price: p.price,
+      effectivePrice: p.effectivePrice,
+      image: p.image,
+      stock: p.stock,
+      lowStockLevel: p.low_stock_level,
+      available: p.available,
+    }));
+    return { name, products };
+  });
+  res.json({
+    categories,
+    waPhone: await getBusinessPhone(),
+    deliveryFee: db.deliveryFee(),
+    store: db.getSetting("store_name", "ZIPRA Grocery"),
+  });
+}));
+
+app.get("/api/store/order/:orderNo", wrap(async (req, res) => {
+  const order = db.getOrderDetail(req.params.orderNo);
+  if (!order) return res.status(404).json({ error: "Order not found" });
+  res.json({
+    order: {
+      id: order.id,
+      waId: order.waId,
+      items: order.items,
+      subtotal: order.subtotal,
+      deliveryFee: order.deliveryFee,
+      total: order.total,
+      paymentStatus: order.paymentStatus,
+      status: order.status,
+      createdAt: order.createdAt,
+    },
+  });
+}));
+
+/* Cart/checkout hand-off. The customer's WhatsApp number comes from the
+   signed ?f= token embedded in their Shop link — no need to ask them for a
+   phone number. The order is created in the DB (source of truth), then
+   WhatsApp pushes the Pay Now card to that same chat. Re-checking out the
+   identical cart within the idempotency window reuses the existing order so
+   we never create duplicate orders or double-push payment. */
+const CHECKOUT_CACHE = new Map(); // `${waId}:${sig}` -> { orderNo, at }
+function itemsSig(items) {
+  return items
+    .slice()
+    .sort((a, b) => Number(a.productId) - Number(b.productId) || Number(a.qty) - Number(b.qty))
+    .map((i) => `${i.productId}x${i.qty}`)
+    .join("|");
+}
+const CHECKOUT_WINDOW_MS = 30 * 60 * 1000;
+app.post("/api/checkout", wrap(async (req, res) => {
+  const b = req.body || {};
+  const tokenWaId = b.token ? shoplink.verify(String(b.token)) : null;
+  const phone = String(b.phone || tokenWaId || "").replace(/[^\d]/g, "");
+  if (!/^\d{10,13}$/.test(phone)) {
+    return res.status(401).json({ error: "Please open the shop from your WhatsApp chat (the checkout link is tied to your WhatsApp)." });
+  }
+  const items = Array.isArray(b.items) ? b.items : [];
+  if (!items.length) throw new Error("Cart is empty");
+  const resolved = [];
+  for (const it of items) {
+    const pid = Number(it.productId);
+    const qty = Math.round(Number(it.qty));
+    if (!(pid >= 1)) throw new Error("Invalid product in cart");
+    if (!(qty >= 1)) throw new Error("Invalid quantity in cart");
+    const p = db.getProductById(pid);
+    if (!p) throw new Error("Unknown product in cart");
+    if (!p.available || p.stock < qty) throw new Error(`${p.item} is out of stock / insufficient stock`);
+    const price = p.effectivePrice && p.effectivePrice > 0 ? p.effectivePrice : p.price;
+    resolved.push({ product_id: p.id, key: `${p.category}.${p.item}`, item: p.item, unit: p.unit, qty, price, subtotal: price * qty });
+  }
+  const subtotal = resolved.reduce((sum, i) => sum + i.subtotal, 0);
+  const fee = db.deliveryFee();
+  const total = subtotal + fee;
+  const sig = itemsSig(items);
+  const cacheKey = `${phone}:${sig}`;
+  const cached = CHECKOUT_CACHE.get(cacheKey);
+  if (cached && Date.now() - cached.at < CHECKOUT_WINDOW_MS) {
+    const dupOrder = db.getOrderDetail(cached.orderNo);
+    if (dupOrder && dupOrder.paymentStatus !== "Paid" && dupOrder.status !== "cancelled") {
+      // Same cart, same user, still unpaid — reuse instead of duplicating.
+      const dupObj = { ...dupOrder, items: dupOrder.items, subtotal: dupOrder.subtotal, deliveryFee: dupOrder.deliveryFee, total: dupOrder.total };
+      await sendReply(phone, payCardPayload(dupObj));
+      return res.json({ ok: true, reused: true, order: { id: dupOrder.id, total: dupOrder.total, subtotal: dupOrder.subtotal, deliveryFee: dupOrder.deliveryFee, waId: phone } });
+    }
+    CHECKOUT_CACHE.delete(cacheKey);
+  }
+  const orderNo = db.nextOrderNo();
+  const t = new Date().toISOString();
+  for (const i of resolved) db.reduceStock(i.key, i.qty);
+  db.insertOrder({
+    id: orderNo,
+    waId: phone,
+    name: "",
+    address: "",
+    lat: null,
+    lng: null,
+    items: resolved,
+    subtotal,
+    deliveryFee: fee,
+    discount: 0,
+    total,
+    paymentMethod: "online",
+    paymentStatus: "Pending",
+    status: "received",
+    createdAt: t,
+    updatedAt: t,
+  });
+  const orderObj = {
+    id: orderNo,
+    waId: phone,
+    name: "",
+    address: "",
+    lat: null,
+    lng: null,
+    items: resolved,
+    subtotal,
+    deliveryFee: fee,
+    discount: 0,
+    total,
+    paymentMethod: "online",
+    paymentStatus: "Pending",
+    status: "received",
+    createdAt: t,
+    updatedAt: t,
+  };
+  CHECKOUT_CACHE.set(cacheKey, { orderNo, at: Date.now() });
+  // Push Pay Now straight to the customer's WhatsApp (native payment card if
+  // WhatsApp Payments is enabled, otherwise paylink / pay page via CTA).
+  const payCard = payCardPayload(orderObj);
+  const payOk = await sendReply(phone, payCard);
+  if (!payOk && payCard.type === "pmt") {
+    console.log("[checkout] WhatsApp pay card rejected — falling back to paylink CTA for", phone);
+    await sendReply(phone, {
+      type: "cta",
+      headerText: "🧾 ZIPRA Order",
+      body: payCard.body,
+      buttons: [{ id: "cta|pay", title: "💳 Pay Now", url: buildPayLink(orderObj.id, orderObj.total) || webUrl(`/pay/${orderObj.id}`) }],
+    });
+  }
+  res.json({ ok: true, order: { id: orderNo, total, subtotal, deliveryFee: fee, waId: phone } });
+}));
+
+function buildOrderSummaryText(order) {
+  const items = Array.isArray(order.items) ? order.items : [];
+  const cap = 12;
+  const rows = items.map((i) => `• ${i.item} × ${i.qty} ${i.unit} — ${fmtMoney(i.subtotal)}`);
+  const shown = rows.slice(0, cap);
+  if (items.length > cap) shown.push(`…and ${items.length - cap} more item${items.length - cap === 1 ? "" : "s"}`);
+  return (
+    `🛒 *Your Order · ${items.reduce((s, i) => s + i.qty, 0)} item${items.reduce((s, i) => s + i.qty, 0) === 1 ? "" : "s"}*\n\n` +
+    shown.join("\n") +
+    `\n\nSubtotal: ${fmtMoney(order.subtotal)}\nDelivery: ${fmtMoney(order.deliveryFee)}` +
+    (order.discount ? `\nDiscount: -${fmtMoney(order.discount)}` : "") +
+    `\n*Total: ${fmtMoney(order.total)}*`
+  );
+}
+
+function payCardPayload(order) {
+  const body =
+    `🧾 *Order #${order.id}* is ready for payment.\n\n` +
+    buildOrderSummaryText(order) +
+    `\n\nTap *💳 Pay Now* below to pay securely.`;
+  if (WHATSAPP_PAYMENT && PAYMENT_RECEIVER && /^\d{10,15}$/.test(PAYMENT_RECEIVER)) {
+    return {
+      type: "pmt",
+      body,
+      footer: "ZIPRA Grocery · Secure WhatsApp payment",
+      amount: order.total,
+      orderNo: order.id,
+    };
+  }
+  return {
+    type: "cta",
+    headerText: "🧾 ZIPRA Order",
+    body,
+    buttons: [{ id: "cta|pay", title: "💳 Pay Now", url: buildPayLink(order.id, order.total) || webUrl(`/pay/${order.id}`) }],
+  };
+}
+
+/* Payment provider → server callback. This is the ONLY way a payment becomes
+   "Paid": status comes from the provider, never from a button click. */
+function findPendingOrderByWaAndAmount(waId, amount) {
+  const rows = db.listOrders({ limit: 200 });
+  const target = Math.round(Number(amount) * 100);
+  return (
+    rows.find(
+      (o) =>
+        o.waId === waId &&
+        (o.paymentStatus || "Pending") === "Pending" &&
+        Math.round(Number(o.total) * 100) === target &&
+        !["delivered", "cancelled"].includes(o.status)
+    ) || null
+  );
+}
+function paymentCardReply(orderNo, total) {
+  const order = db.getOrderDetail(orderNo) || {
+    id: orderNo,
+    items: [],
+    subtotal: total || 0,
+    deliveryFee: 0,
+    discount: 0,
+    total: total || 0,
+  };
+  return payCardPayload(order);
+}
+
+async function verifyPayment(orderNo, txnId, method) {
+  const order = db.getOrderDetail(orderNo);
+  if (!order) throw new Error("Order not found");
+  if (order.paymentStatus === "Paid") return { ok: true, duplicate: true, order };
+  db.updatePayment(orderNo, "Paid", method || "online", txnId);
+  const after = db.getOrderDetail(orderNo);
+  if (after.waId) {
+    const msgs = beginWebDeliveryCapture(after.waId, orderNo);
+    for (const m of msgs) await sendReply(after.waId, m);
+  }
+  return { ok: true, duplicate: false, order: after };
+}
+
+app.post("/api/payment/webhook", wrap(async (req, res) => {
+  if (!PAYMENT_WEBHOOK_SECRET) {
+    return res.status(503).json({ error: "Payment webhook not configured (PAYMENT_WEBHOOK_SECRET)" });
+  }
+  const b = req.body || {};
+  const secret = req.headers["x-webhook-secret"] || b.secret || "";
+  if (secret !== PAYMENT_WEBHOOK_SECRET) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+  const orderNo = String(b.order_no || b.orderId || "").trim();
+  const status = String(b.status || "success").toLowerCase();
+  const txnId = String(b.txn_id || b.transaction_id || "").trim() || `txn-${Date.now()}`;
+  if (!orderNo) throw new Error("order_no required");
+  const order = db.getOrderDetail(orderNo);
+  if (!order) return res.status(404).json({ error: "Order not found" });
+  if (status === "success" || status === "paid" || status === "captured") {
+    const r = await verifyPayment(orderNo, txnId, b.method);
+    return res.json({ ok: true, ...r });
+  }
+  // failed / pending / refunded → record, never mark paid, never advance capture
+  if (status === "failed" || status === "rejected" || status === "refunded") {
+    db.updatePayment(orderNo, "Failed", b.method || "online", txnId);
+  }
+  return res.json({ ok: true, status, order: db.getOrderDetail(orderNo) });
+}));
+
+/* Dev/demo-only surrogate for a real gateway callback. Disabled unless
+   PAYMENT_SIMULATOR=1 is set. */
+app.post("/api/payment/simulate/:orderNo", wrap(async (req, res) => {
+  if (String(process.env.PAYMENT_SIMULATOR || "") !== "1") {
+    return res.status(403).json({ error: "Payment simulator is disabled (set PAYMENT_SIMULATOR=1 to enable)" });
+  }
+  const r = await verifyPayment(req.params.orderNo, `sim-${Date.now()}`, "online");
+  res.json({ simulated: true, ...r });
+}));
+
+app.post("/api/review", wrap(async (req, res) => {
+  const b = req.body || {};
+  const rating = Math.max(1, Math.min(5, Number(b.rating) || 5));
+  db.addReview(String(b.order || "").trim(), rating, String(b.message || "").trim());
+  res.json({ ok: true });
+}));
+
+app.get("/api/reviews", adminAuth, wrap(async (req, res) => {
+  res.json({ reviews: db.listReviews(50) });
 }));
 
 app.post("/api/orders/:id/payment", adminAuth, wrap(async (req, res) => {
@@ -632,7 +1173,10 @@ app.get("/admin", (req, res) => {
 });
 
 if (require.main === module) {
-  setInterval(cleanupExpiredSessions, 60000);
+  setInterval(async () => {
+    const due = cleanupExpiredSessions();
+    for (const d of due) await sendText(d.from, d.text);
+  }, 60000);
   setInterval(drainOutgoingQueue, 30000);
   setInterval(() => {
     processedMessageIds.clear();

@@ -1,9 +1,30 @@
 const orders = require("./orders");
 const products = require("./products");
 const db = require("./db");
+const shoplink = require("./shoplink");
 
 const DEFAULT_DELIVERY_FEE = parseInt(process.env.DELIVERY_FEE || "30", 10);
 const SESSION_TIMEOUT_MS = parseInt(process.env.SESSION_TIMEOUT_MS || "300000", 10);
+
+const BRAND_FOOTER = "ZIPRA Grocery · Fresh & Fast 🍊";
+const WELCOME_BANNER = String(process.env.WELCOME_BANNER_IMAGE || "").trim();
+const WEB_APP_URL = String(process.env.WEB_APP_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/+$/, "");
+
+function webUrl(path) {
+  return WEB_APP_URL + (path || "");
+}
+
+function welcomeImageUrl() {
+  return WELCOME_BANNER || webUrl("/assets/zipra-welcome.png");
+}
+
+const GREETINGS = new Set([
+  "hi", "hello", "hey", "hai", "hii", "yo", "vanakkam", "namaste", "namaskar", "start", "welcome", "eppadi", "helo",
+]);
+
+function timeoutText() {
+  return "⌛ Due to inactivity on the channel, your session has timed out.\n\nJust type *Hi* to restart your conversation 👋";
+}
 
 function deliveryFee() {
   return db.deliveryFee();
@@ -12,88 +33,182 @@ function deliveryFee() {
 const stores = {};
 const savedAddresses = {};
 
-function namePrompt() {
-  return textReply("👤 *Your Details*\n\nPlease type your full name.\nExample: Selva");
-}
-
-function addressPrompt(from, retry) {
-  const saved = savedAddresses[from];
-  return textReply(
-    (retry ? "⚠️ We need a delivery address to continue.\n\n" : "") +
-      "📍 *Delivery Address*\n\nChoose how to share:\n\n" +
-      "1️⃣ Attach a 📍 location in the chat\n" +
-      "2️⃣ Type your full address (house, street, area, city)\n" +
-      (saved ? `3️⃣ Reply *saved* to reuse: ${saved}` : "3️⃣ Reply *saved* to reuse your last address")
-  );
-}
-
-function getSession(from) {
-  const now = Date.now();
-  if (stores[from] && now - (stores[from].updated_at || 0) > SESSION_TIMEOUT_MS) {
-    delete stores[from];
-  }
-  if (!stores[from]) {
-    stores[from] = {
-      wa_id: from,
-      state: "welcome",
-      cart: [],
-      customer_name: null,
-      address: null,
-      payment_method: null,
-      current_order_id: null,
-      updated_at: now,
-      last_msg_id: null,
-      selected_key: null,
-      category: null,
-    };
-  }
-  return stores[from];
-}
-
-function touch(s) {
-  s.updated_at = Date.now();
-}
-
-function resetToWelcome(s) {
-  Object.assign(s, {
-    state: "welcome",
-    cart: [],
-    customer_name: null,
-    address: null,
-    payment_method: null,
-    current_order_id: null,
-    selected_key: null,
-    category: null,
-  });
-  touch(s);
-}
+/* ------------------------------------------------------------------ */
+/* Small presentation helpers                                          */
+/* ------------------------------------------------------------------ */
 
 function textReply(content) {
   return { type: "text", text: content };
 }
 
-function listReply(body, sections, button = "Options") {
-  return { type: "list", body, button, sections };
+function listReply(body, sections, button = "Choose ▾", opts) {
+  opts = opts || {};
+  const r = { type: "list", body, button, sections };
+  const footer = opts.footer === undefined ? BRAND_FOOTER : opts.footer;
+  if (footer) r.footer = String(footer).slice(0, 60);
+  if (opts.headerText) r.headerText = String(opts.headerText).slice(0, 60);
+  return r;
 }
 
-function buttonReply(body, buttons) {
-  return { type: "buttons", body, buttons };
+function buttonReply(body, buttons, opts) {
+  opts = opts || {};
+  const r = { type: "buttons", body, buttons };
+  const footer = opts.footer === undefined ? BRAND_FOOTER : opts.footer;
+  if (footer) r.footer = String(footer).slice(0, 60);
+  if (opts.headerImage) r.headerImage = opts.headerImage;
+  if (opts.headerText) r.headerText = String(opts.headerText).slice(0, 60);
+  return r;
 }
+
+function fmtMoney(n) {
+  return `₹${Number(n || 0).toLocaleString("en-IN")}`;
+}
+
+/* A product's *effective* selling price (discount-aware). */
+function productPrice(p) {
+  return p.effectivePrice && p.effectivePrice > 0 ? p.effectivePrice : p.price;
+}
+
+function calcSubtotal(cart) {
+  return cart.reduce((sum, c) => sum + c.subtotal, 0);
+}
+
+function basketBadge(s) {
+  const n = (s.cart || []).length;
+  if (!n) return "";
+  return ` 🧺 ${n} item${n === 1 ? "" : "s"} · ${fmtMoney(calcSubtotal(s.cart))}`;
+}
+
+const CAT_EMOJI = {
+  "Rice": "🍚",
+  "Flour & Atta": "🌾",
+  "Dal & Pulses": "🫘",
+  "Cooking Oil": "🌻",
+  "Grocery Essentials": "🧂",
+  "Beverages": "☕",
+  "Dairy": "🥛",
+};
+
+function catEmoji(c) {
+  return CAT_EMOJI[c] || "🛒";
+}
+
+/* ------------------------------------------------------------------ */
+/* Welcome / navigation                                               */
+/* ------------------------------------------------------------------ */
 
 function mainMenuReply(note) {
+  const opts = {};
+  if (WELCOME_BANNER) opts.headerImage = WELCOME_BANNER;
+  else opts.headerText = "ZIPRA Grocery";
   return buttonReply(
     (note ? note + "\n\n" : "") +
       "🛒 *Welcome to ZIPRA*\n_Fresh Groceries. Faster Deliveries._\n\n" +
-      "Tap an option to start.\n" +
-      "· Type *offers* for deals & combos\n" +
-      "· Type *help* for support",
+      "What would you like to do?",
     [
       { id: "home|shop", title: "🛍 Shop Groceries" },
       { id: "home|track", title: "📦 Track Order" },
       { id: "home|orders", title: "🧾 My Orders" },
+    ],
+    opts
+  );
+}
+
+function fallbackReply(s) {
+  const note =
+    (s.cart && s.cart.length
+      ? `🧺 Your basket is safe — ${s.cart.length} item${s.cart.length === 1 ? "" : "s"} (${fmtMoney(calcSubtotal(s.cart))}).\n\n`
+      : "") +
+    "Sorry, I didn't quite get that 👀\n\n" +
+    "🛒 *Welcome to ZIPRA*\nHere's what I can do 👇";
+  return buttonReply(note, [
+    { id: "home|shop", title: "🛍 Shop Groceries" },
+    { id: "home|track", title: "📦 Track Order" },
+    { id: "help", title: "❓ Help" },
+  ]);
+}
+
+/* Single-bubble welcome: branded image header + welcome text + menu buttons */
+function welcomeSequence() {
+  return buttonReply(
+    "👋 *Hi! Welcome to ZIPRA* 🛒\n_Fresh Groceries. Faster Deliveries._\n\nWhat would you like to do?",
+    [
+      { id: "home|shop", title: "🛍 Shop Groceries" },
+      { id: "home|track", title: "📦 Track Order" },
+      { id: "home|orders", title: "🧾 My Orders" },
+    ],
+    { headerImage: welcomeImageUrl() }
+  );
+}
+
+/* Shopping now happens in the ZIPRA web app; WhatsApp hands off via CTA. */
+function shopIntroReply() {
+  return textReply("🛍 *Shop Groceries*\n\nClick on the below link to start shopping 👇\nPick your items, tap Checkout — then finish payment right here on WhatsApp.");
+}
+
+function shopCtaReply(from) {
+  const tok = shoplink.sign(from);
+  const url = webUrl(`/shop${tok ? "?f=" + tok : ""}`);
+  return {
+    type: "cta",
+    body: "🔗 *Click Here* to open the ZIPRA shop.",
+    buttons: [{ id: "cta|shop", title: "🔗 Click Here", url }],
+  };
+}
+
+function deliveryReviewReply() {
+  return buttonReply(
+    "Thanks for your Order ✔️\n\nYour experience matters to us!\nHelp us improve by providing your Feedback ✨",
+    [
+      { id: "feedback", title: "⭐ Give Feedback" },
+      { id: "shopagain", title: "🛍 Shop Again" },
+      { id: "home|home", title: "🏠 Main Menu" },
+    ],
+    { headerText: "ZIPRA Grocery" }
+  );
+}
+
+function helpReply() {
+  return listReply(
+    "❓ *Help*\n\nQuick start: tap 🛍 *Shop Groceries*, pick a shelf, tap a product to see its photo + price, add a quantity, then Checkout.\n\nYou can also *type* commands like “Dairy”, “basmati”, “cart”, “track”, “offers”.",
+    [
+      {
+        title: "Quick actions",
+        rows: [
+          { id: "home|shop", title: "🛍 Shop Groceries", description: "Start shopping" },
+          { id: "home|track", title: "📦 Track Order", description: "Live status" },
+          { id: "home|orders", title: "🧾 My Orders", description: "History" },
+          { id: "home|home", title: "🏠 Main Menu", description: "Go home" },
+        ],
+      },
     ]
   );
 }
+
+function offersReply() {
+  const active = (typeof db.listPromotions === "function" ? db.listPromotions() : [])
+    .filter((p) => p.active && p.code);
+  if (!active.length) {
+    return textReply("🍊 *Offers & Combos*\n\nNo active offers right now — check back soon!\n\nTap 🛍 Shop Groceries to start.");
+  }
+  const rows = active.slice(0, 8).map((p, i) => {
+    const v = p.type === "percent" ? `${p.value}% off` : `${fmtMoney(p.value)} off`;
+    return {
+      id: `off|${i}`,
+      title: `Use code ${p.code}`,
+      description: `${p.title || v}${p.minOrder ? ` · min ${fmtMoney(p.minOrder)}` : ""}`,
+    };
+  });
+  rows.push({ id: "home|shop", title: "🛍 Shop Groceries", description: "Start the haul" });
+  rows.push({ id: "home|home", title: "🏠 Main Menu", description: "Go home" });
+  return listReply("🍊 *Offers & Combos*\n\nTap a deal, then apply the code at checkout:", [
+    { title: "Deals", rows },
+  ]);
+}
+
+/* ------------------------------------------------------------------ */
+/* Category ("shelf") browse                                          */
+/* ------------------------------------------------------------------ */
 
 const CAT_GROUPS = [
   { title: "Rice & Grains", cats: ["Rice", "Flour & Atta"] },
@@ -103,15 +218,25 @@ const CAT_GROUPS = [
 ];
 
 function categoryRow(c) {
-  const n = products.getProductsInCategory(c).filter((p) => p.available).length;
+  const list = products.getProductsInCategory(c);
+  const avail = list.filter((p) => p.available);
+  const prices = avail.map((p) => productPrice(p)).filter((n) => n > 0).sort((a, b) => a - b);
+  const range = prices.length > 1
+    ? `${fmtMoney(prices[0])}–${fmtMoney(prices[prices.length - 1])}`
+    : prices.length === 1
+      ? fmtMoney(prices[0])
+      : "";
+  const desc = avail.length
+    ? `${avail.length} item${avail.length === 1 ? "" : "s"}${range ? ` · ${range}` : ""}`
+    : "Browsing";
   return {
     id: `cat|${c}`,
-    title: String(c).slice(0, 24),
-    description: n ? `Fresh · ${n} item${n === 1 ? "" : "s"}` : "Browsing",
+    title: `${catEmoji(c)} ${String(c).slice(0, 21)}`,
+    description: desc,
   };
 }
 
-function categoryMenuReply() {
+function categoryMenuReply(s) {
   const cats = products.getCategories();
   const seen = {};
   const sections = [];
@@ -126,20 +251,28 @@ function categoryMenuReply() {
   }
   const rest = cats.filter((c) => !seen[c]).map(categoryRow);
   if (rest.length) sections.push({ title: "More", rows: rest });
-  sections.push({
-    title: "Navigate",
-    rows: [
-      { id: "nav|back", title: "Back", description: "Main menu" },
-      { id: "nav|home", title: "Main Menu", description: "Go home" },
-    ],
-  });
-  return listReply("🛍 *Shop Groceries*\n\nChoose a category to start shopping:", sections);
+
+  const nav = [];
+  if (s.cart && s.cart.length) {
+    nav.push({ id: "cart-view", title: "🧺 View Cart", description: `${fmtMoney(calcSubtotal(s.cart))} · ${s.cart.length} items` });
+  }
+  nav.push({ id: "home|home", title: "🏠 Main Menu", description: "Start over" });
+  sections.push({ title: "Navigate", rows: nav });
+  return listReply("🛍 *Shop Groceries*\n\nChoose a category to start your haul 👇", sections);
 }
 
-function productCard(p) {
-  const img = String(p.image || "").trim() ? `\n${String(p.image).trim()}` : "";
-  const st = p.available ? "In stock" : "Out of stock";
-  return `🛒 *${p.item}*${img}\n${fmtMoney(p.price)} / ${p.unit} · ${st}`;
+/* ------------------------------------------------------------------ */
+/* Product cards (the "shopping" moment)                              */
+/* ------------------------------------------------------------------ */
+
+function stockLine(p) {
+  if (!p.available || p.stock <= 0) return "Out of stock";
+  if (p.stock <= p.low_stock_level) return `Only ${Math.floor(p.stock)} left 🔥`;
+  return "In stock";
+}
+
+function priceLine(p) {
+  return `${fmtMoney(productPrice(p))} / ${p.unit}`;
 }
 
 function pName(p) {
@@ -148,93 +281,78 @@ function pName(p) {
 
 function pDesc(p) {
   if (!p.available) return "Out of stock";
-  return `${fmtMoney(p.price)}/${p.unit} · In stock`;
-}
-
-function basketLine(cart) {
-  const n = cart.length;
-  if (!n) return "";
-  return `\n🧺 Basket: ${n} item${n === 1 ? "" : "s"} · ${fmtMoney(calcSubtotal(cart))}`;
+  return `${priceLine(p)} · ${stockLine(p)}`;
 }
 
 function productListReply(category, note, cart) {
   cart = cart || [];
   const list = products.getProductsInCategory(category);
-  const rows = list.slice(0, 7).map((p, i) => ({
-    id: `prod|${i + 1}`,
-    title: pName(p),
-    description: pDesc(p),
-  }));
+  const rows = list.slice(0, 7).map((p) => {
+    const inCart = cart.find((c) => c.key === `${p.category}.${p.item}`);
+    const desc =
+      p.available
+        ? `${priceLine(p)} · ${stockLine(p)}${inCart ? ` · ${inCart.qty} in basket` : ""}`
+        : "Out of stock";
+    return { id: `prod|${p.id}`, title: pName(p), description: desc };
+  });
   rows.push({
     id: "prod|done",
-    title: "Cart & Checkout",
-    description: cart.length ? `🧺 ${fmtMoney(calcSubtotal(cart))} · Review` : "Finish shopping",
+    title: "🧺 Cart & Checkout",
+    description: cart.length ? `${fmtMoney(calcSubtotal(cart))} · Review` : "Finish shopping",
   });
-  rows.push({ id: "nav|back", title: "Back", description: "Categories" });
-  rows.push({ id: "nav|home", title: "Main Menu", description: "Go home" });
-  const body = `🛍 *${category}*\n\n${note || "Tap a product to add it, then press Cart & Checkout when done."}`;
+  rows.push({ id: "nav|back", title: "⬅️ Shelves", description: "Categories" });
+  rows.push({ id: "home|home", title: "🏠 Main Menu", description: "Start over" });
+  const body = `🛍 *${category}*\n\n${note || "Tap a product to see it, then add a quantity."}`;
   return listReply(body, [{ title: String(category).slice(0, 24), rows }]);
 }
 
-function qtyMenuReply(product) {
-  const max = Math.max(1, product.stock);
+function qtyMenuReply(product, note) {
+  const max = Math.max(1, Math.floor(product.stock));
   const qs = [1, 2, 5].filter((q) => q <= max);
   if (!qs.length) qs.push(1);
-  const buttons = qs.map((q) => ({ id: `qty|${q}`, title: `${q} ${product.unit}` }));
-  return buttonReply(
-    `${productCard(product)}\n\nHow much would you like?\n· Tap a size below, or type a number (e.g. 3)`,
-    buttons
-  );
-}
-
-function changeQtyMenuReply(s) {
-  if (!s.cart.length) {
-    s.state = "cart";
-    return cartMenuReply(s);
-  }
-  const rows = s.cart.slice(0, 6).map((c, i) => ({
-    id: `cq|${i}`,
-    title: `${String(c.item || "").slice(0, 18)} × ${c.qty}`,
-    description: `${fmtMoney(c.subtotal)} · change qty`,
-  }));
-  rows.push({ id: "cart|edit", title: "Remove Item", description: "Pick what to remove" });
-  rows.push({ id: "cart|clear", title: "Clear Cart", description: "Empty the cart" });
-  rows.push({ id: "nav|back", title: "Back", description: "Cart" });
-  rows.push({ id: "nav|home", title: "Main Menu", description: "Go home" });
-  return listReply("🔢 *Change Quantity*\n\nSelect an item to adjust:", [
-    { title: "Items", rows },
-  ]);
+  const buttons = qs.slice(0, 2).map((q) => ({ id: `qty|${q}`, title: `🛒 Add ${q} ${product.unit}` }));
+  buttons.push({ id: "qty|custom", title: "✏️ Custom qty" });
+  const opts = {};
+  const img = String(product.image || "").trim();
+  if (img) opts.headerImage = img;
+  const body =
+    (note ? note + "\n\n" : "") +
+    `*${pName(product)}*\n${priceLine(product)}\n\n` +
+    `${stockLine(product)}\n` +
+    "How many do you want? 👇";
+  return buttonReply(body, buttons, opts);
 }
 
 function qtyEditMenuReply(product, currentQty) {
-  const max = Math.max(1, product.stock);
+  const max = Math.max(1, Math.floor(product.stock));
   const qs = [1, 2, 5].filter((q) => q <= max && q !== currentQty);
   if (!qs.length) qs.push(currentQty > 1 ? currentQty - 1 : 1);
-  const buttons = qs.slice(0, 3).map((q) => ({ id: `qty|${q}`, title: `${q} ${product.unit}` }));
+  const buttons = qs.slice(0, 2).map((q) => ({ id: `qty|${q}`, title: `${q} ${product.unit}` }));
+  buttons.push({ id: "qty|custom", title: "✏️ Custom" });
+  const opts = {};
+  const img = String(product.image || "").trim();
+  if (img) opts.headerImage = img;
   return buttonReply(
-    `${productCard(product)}\n\nSet quantity (current ${currentQty} ${product.unit}):\n✦ Tap a size below, or type a new number`,
-    buttons
+    `*${pName(product)}*\n${priceLine(product)}\n\nSet quantity (current ${currentQty} ${product.unit}):`,
+    buttons,
+    opts
   );
 }
 
-function fmtMoney(n) {
-  return `₹${Number(n || 0).toLocaleString("en-IN")}`;
-}
+/* ------------------------------------------------------------------ */
+/* Cart / receipt                                                     */
+/* ------------------------------------------------------------------ */
 
-function calcSubtotal(cart) {
-  return cart.reduce((sum, c) => sum + c.subtotal, 0);
-}
-
-function cartSummaryText(s) {
+function receiptBlock(s, includeAddress) {
   const sub = calcSubtotal(s.cart);
   const del = deliveryFee();
   const lines = [];
   if (!s.cart.length) {
     lines.push("Your cart is empty.");
     lines.push("");
-    lines.push(`Subtotal ${fmtMoney(0)}`);
-    lines.push(`Delivery ${fmtMoney(del)}`);
-    lines.push(`*Total   ${fmtMoney(del)}*`);
+    lines.push("Subtotal " + fmtMoney(0));
+    lines.push("Delivery " + fmtMoney(del));
+    lines.push("*Total   " + fmtMoney(del) + "*");
   } else {
     s.cart.forEach((c, i) => {
       lines.push(`${i + 1}. ${c.item}`);
@@ -246,72 +364,132 @@ function cartSummaryText(s) {
     lines.push(`Delivery ${fmtMoney(del)}`);
     lines.push(`*Total   ${fmtMoney(sub + del)}*`);
   }
-  return `🛒 *Your Cart*\n\n${lines.join("\n")}`;
+  if (includeAddress) {
+    lines.push("");
+    lines.push(
+      s.lat && s.lng
+        ? `📍 https://maps.google.com/maps?q=${s.lat},${s.lng}`
+        : `📍 ${s.address || "Pending"}`
+    );
+  }
+  return lines.join("\n");
+}
+
+function cartSummaryText(s) {
+  return `🛒 *Your Cart*\n\n${receiptBlock(s)}`;
 }
 
 function cartMenuReply(s) {
-  const buttons = [
-    { id: "cart|more", title: "➕ Add More" },
-    { id: "cart|checkout", title: "✅ Checkout" },
-  ];
-  if (s.cart.length) buttons.push({ id: "cart|qty", title: "🔢 Change Qty" });
-  else buttons.push({ id: "nav|home", title: "🏠 Main Menu" });
-  return buttonReply(cartSummaryText(s), buttons);
+  let buttons;
+  if (s.cart && s.cart.length) {
+    buttons = [
+      { id: "cart|more", title: "🛒 Add More" },
+      { id: "cart|checkout", title: "✅ Checkout" },
+      { id: "cart|edit", title: "✏️ Edit" },
+    ];
+  } else {
+    buttons = [
+      { id: "cart|more", title: "🛒 Start Shopping" },
+      { id: "home|home", title: "🏠 Main Menu" },
+    ];
+  }
+  return buttonReply(cartSummaryText(s), buttons, { headerText: "🧺 Your Cart" });
+}
+
+function changeQtyMenuReply(s) {
+  if (!s.cart.length) {
+    s.state = "cart";
+    return cartMenuReply(s);
+  }
+  const rows = s.cart.slice(0, 6).map((c, i) => ({
+    id: `cq|${i}`,
+    title: `${String(c.item || "").slice(0, 17)} · ${c.qty}`,
+    description: `${fmtMoney(c.subtotal)} · change`,
+  }));
+  rows.push({ id: "cart|edit", title: "🗑 Remove Item", description: "Pick what to remove" });
+  rows.push({ id: "cart|clear", title: "🧹 Clear Cart", description: "Empty the basket" });
+  rows.push({ id: "nav|back", title: "⬅️ Back", description: "Cart" });
+  return listReply("🔢 *Change Quantity*\n\nSelect an item to adjust:", [
+    { title: "In your basket", rows },
+  ]);
 }
 
 function removeItemMenuReply(s) {
   const rows = s.cart.slice(0, 7).map((c, i) => ({
     id: `rm|${i}`,
-    title: `${String(c.item || "").slice(0, 18)} × ${c.qty}`,
+    title: `${String(c.item || "").slice(0, 18)} · ${c.qty}`,
     description: `Remove · ${fmtMoney(c.subtotal)}`,
   }));
-  rows.push({ id: "nav|back", title: "Back", description: "Cart" });
-  rows.push({ id: "nav|home", title: "Main Menu", description: "Go home" });
+  rows.push({ id: "nav|back", title: "⬅️ Back", description: "Cart" });
   return listReply("✏️ *Edit Cart*\n\nSelect the item to remove:", [
     { title: "Items", rows },
   ]);
 }
 
+/* ------------------------------------------------------------------ */
+/* Checkout                                                           */
+/* ------------------------------------------------------------------ */
+
+function namePrompt() {
+  return textReply("👤 *Your Name*\n\nType your full name for the bill & delivery.\n_Example: Selva_");
+}
+
+function addressPrompt(from, retry) {
+  const saved = savedAddresses[from];
+  return textReply(
+    (retry ? "⚠️ We need a delivery address to continue.\n\n" : "") +
+      "📍 *Delivery Address*\n\n" +
+      "1️⃣ Attach a 📍 location in the chat\n" +
+      "2️⃣ Type your full address (house, street, area, city)\n" +
+      (saved ? `3️⃣ Reply *saved* to reuse: ${saved}` : "3️⃣ Reply *saved* to reuse your last address")
+  );
+}
+
 function paymentMenuReply() {
-  return buttonReply("💳 *Payment*\n\nCash on Delivery or UPI — your choice:", [
+  return buttonReply("💳 *Payment*\n\nHow do you want to pay?", [
     { id: "pay|cod", title: "💵 Cash on Delivery" },
     { id: "pay|online", title: "📲 UPI / Online" },
-    { id: "nav|back", title: "⬅️ Back" },
+    { id: "nav|back", title: "⬅️ Address" },
   ]);
 }
 
-function reviewText(s) {
-  const sub = calcSubtotal(s.cart);
-  const total = sub + deliveryFee();
-  const lines = [];
-  s.cart.forEach((c, i) => {
-    lines.push(`${i + 1}. ${c.item}`);
-    lines.push(`   ${c.qty} ${c.unit} × ${fmtMoney(c.price)} = ${fmtMoney(c.subtotal)}`);
-  });
-  lines.push("");
-  lines.push("─────────────");
-  lines.push(`Subtotal ${fmtMoney(sub)}`);
-  lines.push(`Delivery ${fmtMoney(deliveryFee())}`);
-  lines.push(`*Total   ${fmtMoney(total)}*`);
-  lines.push("");
-  if (s.lat && s.lng) {
-    lines.push("📍 Deliver to:");
-    lines.push(`https://maps.google.com/maps?q=${s.lat},${s.lng}`);
-  } else {
-    lines.push(`📍 Deliver to:\n${s.address || "Pending"}`);
+function onlinePaymentReply(s) {
+  const total = calcSubtotal(s.cart) + deliveryFee();
+  let msg = `💳 *UPI / Online Payment*\n\nOrder Amount: ${fmtMoney(total)}\n\n`;
+  const upi = process.env.PAYMENT_UPI_ID;
+  const link = process.env.PAYMENT_LINK;
+  if (link) {
+    msg += `📲 Pay link:\n${link}?amount=${total}&order=${orders.nextOrderNo()}\n\n`;
   }
+  if (upi) {
+    const tn = encodeURIComponent(`Zipra Order ${orders.nextOrderNo()}`);
+    const am = encodeURIComponent(total);
+    msg += `💸 UPI pay:\nupi://pay?pa=${encodeURIComponent(upi)}&pn=Zipra&am=${am}&tn=${tn}\n\n`;
+    msg += `(Opens in GPay / PhonePe / any UPI app)\n\n`;
+  }
+  msg += "Pay now, then tap *Done - Continue*. We'll verify before confirming your order.";
+  return listReply(msg, [
+    {
+      title: "Payment",
+      rows: [
+        { id: "pay|review", title: "✅ Done - Continue", description: "Go to review" },
+        { id: "pay|back", title: "💵 Switch to Cash", description: "On delivery" },
+      ],
+    },
+  ]);
+}
+
+function reviewMenuReply(s) {
+  const lines = [];
+  lines.push(`📍 Deliver to:\n${s.lat && s.lng ? `https://maps.google.com/maps?q=${s.lat},${s.lng}` : s.address || "Pending"}`);
   lines.push("");
   lines.push(`💳 Pay: ${s.payment_method === "online" ? "Online (UPI)" : "Cash on Delivery"}`);
   lines.push("");
   lines.push("Press *Confirm Order* to place your order.");
-  return `🧾 *Order Summary*\n\n${lines.join("\n")}`;
-}
-
-function reviewMenuReply(s) {
-  return buttonReply(reviewText(s), [
-    { id: "rev|confirm", title: "Confirm Order" },
-    { id: "rev|edit", title: "Edit Order" },
-    { id: "rev|cancel", title: "Cancel" },
+  return buttonReply(`🧾 *Order Summary*\n\n${receiptBlock(s)}\n\n${lines.join("\n")}`, [
+    { id: "rev|confirm", title: "✅ Confirm Order" },
+    { id: "rev|edit", title: "✏️ Edit Order" },
+    { id: "rev|cancel", title: "❌ Cancel" },
   ]);
 }
 
@@ -343,6 +521,10 @@ function buildOrder(s, from) {
   };
 }
 
+/* ------------------------------------------------------------------ */
+/* Tracking                                                           */
+/* ------------------------------------------------------------------ */
+
 const TIMELINE_STEPS = [
   { key: "received", label: "Order Placed" },
   { key: "confirmed", label: "Confirmed" },
@@ -352,7 +534,7 @@ const TIMELINE_STEPS = [
 ];
 
 function statusBar(status) {
-  if (status === "cancelled") return "✕ ∅ ∅ ∅ ∅";
+  if (status === "cancelled") return "✕ — — — —";
   const idx = TIMELINE_STEPS.findIndex((st) => st.key === status);
   if (idx < 0) return "● ○ ○ ○ ○";
   return "●".repeat(idx + 1) + "○".repeat(TIMELINE_STEPS.length - idx - 1);
@@ -373,12 +555,12 @@ function statusTimeline(status) {
 }
 
 const STATUS_HINT = {
-  received: "🕐 Your order is waiting for confirmation.",
-  confirmed: "✅ Your order has been confirmed.",
-  preparing: "👨‍🍳 Your order is being prepared.",
-  out_for_delivery: "🛵 Your order is on the way!",
-  delivered: "🎉 Your order has been delivered.",
-  cancelled: "❌ This order was cancelled.",
+  received: "We're confirming your order.",
+  confirmed: "Getting ready in-store.",
+  preparing: "Being packed fresh.",
+  out_for_delivery: "On the way to you!",
+  delivered: "Enjoy!",
+  cancelled: "This order was cancelled.",
 };
 
 function fmtPlaced(order) {
@@ -421,11 +603,11 @@ function trackBody(order) {
   const items = (order.items || []).map((c) => `${c.item} × ${c.qty} ${c.unit}`).join("\n");
   const hint = STATUS_HINT[order.status] || "";
   return (
-    `📦 *Order Status*\nOrder #${order.id}\nPlaced: ${fmtPlaced(order)}\n\n` +
+    `📦 *Order #${order.id}*\nPlaced: ${fmtPlaced(order)}\n\n` +
     (items ? `🛍 ${items}\n\n` : "") +
-    `Subtotal ${fmtMoney(order.subtotal)} · Delivery ${fmtMoney(order.deliveryFee)}\n*Total ${fmtMoney(order.total)}*\n💳 ${paymentLabel(order)}\n\n` +
-    `${statusBar(order.status)}\n${statusTimeline(order.status)}\n\n` +
-    (hint ? `“${hint}”` : "")
+    `Subtotal ${fmtMoney(order.subtotal)} · Delivery ${fmtMoney(order.deliveryFee)}\n*Total ${fmtMoney(order.total)}*\n💳 ${paymentLabel(order)}\n🏍 ETA ~30–45 min\n\n` +
+    `*Progress*\n${statusBar(order.status)}\n${statusTimeline(order.status)}\n\n` +
+    `_Next step:_ ${hint}`
   );
 }
 
@@ -434,17 +616,16 @@ function trackReply(s, from) {
   if (!order) {
     return listReply("📦 *Order Status*\n\nYou don't have an active order right now.\nPlace a new order to get started!", [
       { title: "Track", rows: [
-        { id: "home|shop", title: "Shop Groceries", description: "Start shopping" },
-        { id: "nav|home", title: "Main Menu", description: "Go home" },
+        { id: "home|shop", title: "🛍 Shop Groceries", description: "Start shopping" },
+        { id: "home|home", title: "🏠 Main Menu", description: "Go home" },
       ] },
     ]);
   }
   s.current_order_id = order.id;
   return listReply(trackBody(order), [
     { title: "Track", rows: [
-      { id: "trk|refresh", title: "Refresh Status", description: "Get latest" },
-      { id: "nav|back", title: "Back", description: "Main Menu" },
-      { id: "nav|home", title: "Main Menu", description: "Go home" },
+      { id: "trk|refresh", title: "🔄 Refresh Status", description: "Get latest" },
+      { id: "home|home", title: "🏠 Main Menu", description: "Go home" },
     ] },
   ]);
 }
@@ -454,8 +635,8 @@ function myOrdersReply(s, from) {
   if (!recent.length) {
     return listReply("🧾 *My Orders*\n\nYou haven't placed any orders yet.", [
       { title: "Orders", rows: [
-        { id: "home|shop", title: "Shop Groceries", description: "Start shopping" },
-        { id: "nav|home", title: "Main Menu", description: "Go home" },
+        { id: "home|shop", title: "🛍 Shop Groceries", description: "Start shopping" },
+        { id: "home|home", title: "🏠 Main Menu", description: "Go home" },
       ] },
     ]);
   }
@@ -464,9 +645,8 @@ function myOrdersReply(s, from) {
     title: o.id,
     description: `${fmtMoney(o.total)} · ${orders.STATUS_LABEL[o.status]}`,
   }));
-  rows.push({ id: "nav|back", title: "Back", description: "Main Menu" });
-  rows.push({ id: "nav|home", title: "Main Menu", description: "Go home" });
-  return listReply("🧾 *My Orders*\n\nSelect an order to see its details:", [
+  rows.push({ id: "home|home", title: "🏠 Main Menu", description: "Go home" });
+  return listReply("🧾 *My Orders*\n\nSelect an order:", [
     { title: "Recent Orders", rows },
   ]);
 }
@@ -477,45 +657,69 @@ function orderDetailReply(order) {
     `Placed: ${fmtPlaced(order)}\n\n` +
     `${itemsBlock(order)}\n\n` +
     `${summaryBlock(order)}\n\n` +
-    `💳 ${paymentLabel(order)} · 📍 ${safeDeliveryLabel(order)}\n\n` +
-    `${statusBar(order.status)}\n${statusTimeline(order.status)}`;
+    `💳 ${paymentLabel(order)}\n📍 ${safeDeliveryLabel(order)}\n\n` +
+    `*Progress*\n${statusBar(order.status)}\n${statusTimeline(order.status)}\n\n` +
+    `_Next step:_ ${STATUS_HINT[order.status] || ""}`;
   return listReply(body, [
     { title: "Order", rows: [
-      { id: "detail|refresh", title: "Refresh Status", description: "Get latest" },
-      { id: "nav|home", title: "Main Menu", description: "Go home" },
+      { id: "detail|refresh", title: "🔄 Refresh Status", description: "Get latest" },
+      { id: "home|home", title: "🏠 Main Menu", description: "Go home" },
     ] },
   ]);
 }
 
-function offersReply() {
-  const active = (typeof db.listPromotions === "function" ? db.listPromotions() : [])
-    .filter((p) => p.active && p.code);
-  if (!active.length) {
-    return textReply("🍊 *Offers & Combos*\n\nNo active offers right now — check back soon.\n\nType *menu* or tap Main Menu anytime.");
+/* ------------------------------------------------------------------ */
+/* Session management                                                 */
+/* ------------------------------------------------------------------ */
+
+function getSession(from) {
+  const now = Date.now();
+  if (stores[from] && now - (stores[from].updated_at || 0) > SESSION_TIMEOUT_MS) {
+    delete stores[from];
   }
-  const lines = active.map((p, i) => {
-    const v = p.type === "percent" ? `${p.value}% off` : `${fmtMoney(p.value)} off`;
-    return `${i + 1}. *${p.code}* · ${p.title || v}\n   ${v}${p.minOrder ? ` · min order ${fmtMoney(p.minOrder)}` : ""}`;
-  });
-  return textReply(`🍊 *Offers & Combos*\n\n${lines.join("\n\n")}\n\nUse the code at checkout.\n\nType *menu* anytime.`);
+  if (!stores[from]) {
+    stores[from] = {
+      wa_id: from,
+      state: "welcome",
+      cart: [],
+      customer_name: null,
+      address: null,
+      payment_method: null,
+      current_order_id: null,
+      pending_order: null,
+      updated_at: now,
+      last_msg_id: null,
+      selected_key: null,
+      category: null,
+    };
+  }
+  return stores[from];
 }
 
-function helpReply() {
-  return textReply(
-    "❓ *Help*\n\n" +
-      "🛍 *Shop Groceries* — Tap Shop Groceries, pick a category, tap products to add, then Cart & Checkout.\n" +
-      "📦 *Track Order* — See live status: Order Placed → Confirmed → Preparing → Out for Delivery → Delivered.\n" +
-      "💳 *Payment* — Cash on Delivery or UPI (online).\n" +
-      "🧾 *My Orders* — See your past orders any time.\n\n" +
-      "Type *menu* to return to the Main Menu, or *offers* for today's deals."
-  );
+function touch(s) {
+  s.updated_at = Date.now();
+}
+
+function resetToWelcome(s) {
+  Object.assign(s, {
+    state: "welcome",
+    cart: [],
+    customer_name: null,
+    address: null,
+    payment_method: null,
+    current_order_id: null,
+    pending_order: null,
+    selected_key: null,
+    category: null,
+  });
+  touch(s);
 }
 
 function goBack(s, from) {
   switch (s.state) {
     case "product": {
       s.state = "category";
-      return categoryMenuReply();
+      return categoryMenuReply(s);
     }
     case "qty": {
       s.state = "product";
@@ -536,19 +740,23 @@ function goBack(s, from) {
         return qtyMenuReply(p);
       }
       s.state = "category";
-      return categoryMenuReply();
+      return categoryMenuReply(s);
     }
     case "remove_item": {
       s.state = "cart";
       return cartMenuReply(s);
     }
     case "address": {
-      s.state = "name";
-      return namePrompt();
+      s.state = "cart";
+      return cartMenuReply(s);
     }
-    case "payment": {
+    case "name": {
       s.state = "address";
       return addressPrompt(from);
+    }
+    case "payment": {
+      s.state = "name";
+      return namePrompt();
     }
     case "payment_confirm": {
       s.state = "payment";
@@ -565,24 +773,70 @@ function goBack(s, from) {
   }
 }
 
-function quickAdd(s, product) {
-  const key = `${product.category}.${product.item}`;
-  const existing = s.cart.find((c) => c.key === key);
-  if (existing) {
-    existing.qty += 1;
-    existing.subtotal = existing.price * existing.qty;
-  } else {
-    s.cart.push({
-      key,
-      item: product.item,
-      unit: product.unit,
-      qty: 1,
-      price: product.price,
-      subtotal: product.price,
-    });
+/* ------------------------------------------------------------------ */
+/* Text command router (typed words)                                  */
+/* ------------------------------------------------------------------ */
+
+const ACTION_KEYWORDS = {
+  "menu": "home", "home": "home", "main": "home", "welcome": "home", "start": "home",
+  "hi": "home", "hello": "home", "hey": "home", "hai": "home", "vanakkam": "home", "namaste": "home", "hii": "home", "yo": "home",
+  "shop": "shop", "shopping": "shop", "grocery": "shop", "groceries": "shop", "store": "shop", "browse": "shop",
+  "track": "track", "tracking": "track", "status": "track", "where": "track",
+  "orders": "orders", "history": "orders",
+  "cart": "cart", "basket": "cart", "bag": "cart",
+  "checkout": "checkout", "place order": "checkout",
+  "help": "help", "support": "help",
+  "offers": "offers", "offer": "offers", "deals": "offers", "combos": "offers", "promo": "offers",
+};
+
+const CATEGORY_ALIASES = {
+  "dal": "Dal & Pulses", "dals": "Dal & Pulses", "dal & pulses": "Dal & Pulses",
+  "oil": "Cooking Oil", "oils": "Cooking Oil",
+  "essential": "Grocery Essentials", "essentials": "Grocery Essentials", "staples": "Grocery Essentials",
+  "flour": "Flour & Atta", "atta": "Flour & Atta", "aata": "Flour & Atta",
+  "dairy": "Dairy", "beverage": "Beverages", "beverages": "Beverages",
+  "rice": "Rice", "grains": "Rice", "grain": "Rice",
+};
+
+/* Returns a directive {kind, value} or null. */
+function routeText(typed, s) {
+  const text = String(typed || "").trim().toLowerCase();
+  if (!text) return null;
+
+  const direct = ACTION_KEYWORDS[text];
+  if (direct) return { kind: direct };
+
+  /* exact product match */
+  const exactProduct = products.getAllProducts().find((p) => p.item.toLowerCase() === text);
+  if (exactProduct) return { kind: "product", product: exactProduct };
+
+  /* exact category match */
+  const cats = products.getCategories();
+  const exactCat = cats.find((c) => c.toLowerCase() === text);
+  if (exactCat) return { kind: "category", value: exactCat };
+
+  /* alias */
+  if (CATEGORY_ALIASES[text]) {
+    const cat = CATEGORY_ALIASES[text];
+    if (cats.includes(cat)) return { kind: "category", value: cat };
   }
-  touch(s);
+
+  /* fuzzy, only for real words (>=3 chars) and not too generic */
+  if (text.length >= 3) {
+    const fuzzyProduct = products
+      .getAllProducts()
+      .find((p) => p.item.toLowerCase().includes(text));
+    if (fuzzyProduct) return { kind: "product", product: fuzzyProduct };
+    const fuzzyCat = cats.find((c) => c.toLowerCase().includes(text));
+    if (fuzzyCat) return { kind: "category", value: fuzzyCat };
+  }
+
+  return null;
 }
+
+/* ------------------------------------------------------------------ */
+/* Main message handler                                               */
+/* ------------------------------------------------------------------ */
 
 function applyQtyChange(s, q, price) {
   const line = s.cart[s.qty_edit_idx];
@@ -612,7 +866,7 @@ async function handleMessage(from, payload, _saveOrder) {
     if (replyId.startsWith("ord|")) replyId = `ord-${replyId.slice(4)}`;
     if (replyId.startsWith("detail|")) replyId = `detail-${replyId.slice(7)}`;
   }
-  const selected = replyId; // normalized choice for this turn ("" if typed textual)
+  const selected = replyId;
   const s = getSession(from);
   touch(s);
 
@@ -621,7 +875,6 @@ async function handleMessage(from, payload, _saveOrder) {
   const navBack = selected === "back";
 
   if (typed === "help" || selected === "help") {
-    resetToWelcome(s);
     return helpReply();
   }
 
@@ -639,10 +892,16 @@ async function handleMessage(from, payload, _saveOrder) {
     return goBack(s, from);
   }
 
+  /* Post-delivery review actions */
+  if (selected === "feedback") {
+    return [shopIntroReply(), { type: "cta", body: "✨ *Feedback*\n\nTell us how we did — 60 seconds, big help!\n\n_Your rating keeps your groceries & deliveries great._", buttons: [{ id: "cta|review", title: "⭐ Give Feedback", url: webUrl("/review") }] }];
+  }
+  if (selected === "shopagain") {
+    return [shopIntroReply(), shopCtaReply(from)];
+  }
+
   if (selected === "shop") {
-    s.state = "category";
-    s.category = null;
-    return categoryMenuReply();
+    return [shopIntroReply(), shopCtaReply(from)];
   }
   if (selected === "track") {
     s.state = "track";
@@ -652,17 +911,72 @@ async function handleMessage(from, payload, _saveOrder) {
     s.state = "my_orders";
     return myOrdersReply(s, from);
   }
-
-  const textStates = ["custom_qty", "name", "address"];
-  if (typed === "offers" && !textStates.includes(s.state)) {
-    resetToWelcome(s);
-    return offersReply();
+  if (selected === "cart-view") {
+    s.state = "cart";
+    return cartMenuReply(s);
   }
-  if (selected === "" && typed && !textStates.includes(s.state)) {
-    resetToWelcome(s);
-    return mainMenuReply(
-      "Sorry, I didn't understand that.\nPlease choose one of the options below:"
-    );
+
+  const textStates = ["custom_qty", "custom_qty_change", "name", "address", "web_name", "web_location"];
+  const isNumeric = /^\d+$/.test(typed);
+
+  /* Typed text (not a widget tap, not pure numbers, not a free-text field) → try routing */
+  if (selected === "" && typed && !textStates.includes(s.state) && !isNumeric) {
+    if (GREETINGS.has(typed)) {
+      resetToWelcome(s);
+      return welcomeSequence();
+    }
+    const dir = routeText(typed, s);
+    if (dir) {
+      switch (dir.kind) {
+        case "home":
+          resetToWelcome(s);
+          return mainMenuReply();
+        case "help":
+          return helpReply();
+        case "offers":
+          return offersReply();
+        case "shop":
+          return [shopIntroReply(), shopCtaReply(from)];
+        case "track":
+          s.state = "track";
+          return trackReply(s, from);
+        case "orders":
+          s.state = "my_orders";
+          return myOrdersReply(s, from);
+        case "cart":
+          s.state = "cart";
+          return cartMenuReply(s);
+        case "checkout":
+          if (s.cart && s.cart.length) {
+            s.state = "address";
+            return addressPrompt(from);
+          }
+          s.state = "cart";
+          return cartMenuReply(s);
+        case "category": {
+          s.state = "product";
+          s.category = dir.value;
+          return productListReply(dir.value, null, s.cart);
+        }
+        case "product": {
+          const p = dir.product;
+          if (p.available && p.stock > 0) {
+            s.selected_key = `${p.category}.${p.item}`;
+            s.state = "qty";
+            return qtyMenuReply(p);
+          }
+          s.state = "product";
+          s.category = p.category;
+          const note = `Sorry, *${p.item}* is out of stock.\nPlease try another product.`;
+          return productListReply(p.category, note, s.cart);
+        }
+      }
+    }
+    return fallbackReply(s);
+  }
+
+  if (typed === "offers" && !textStates.includes(s.state)) {
+    return offersReply();
   }
 
   switch (s.state) {
@@ -672,6 +986,10 @@ async function handleMessage(from, payload, _saveOrder) {
     }
 
     case "category": {
+      if (selected === "cart-view") {
+        s.state = "cart";
+        return cartMenuReply(s);
+      }
       if (selected && selected.startsWith("cat-")) {
         const category = selected.slice(4);
         if (products.getProductsInCategory(category).length) {
@@ -680,7 +998,7 @@ async function handleMessage(from, payload, _saveOrder) {
           return productListReply(category);
         }
       }
-      return categoryMenuReply();
+      return categoryMenuReply(s);
     }
 
     case "product": {
@@ -688,11 +1006,23 @@ async function handleMessage(from, payload, _saveOrder) {
         s.state = "cart";
         return cartMenuReply(s);
       }
+      if (selected === "cart-view") {
+        s.state = "cart";
+        return cartMenuReply(s);
+      }
       if (selected && selected.startsWith("prod-")) {
-        const idx = parseInt(selected.slice(5), 10);
-        const list = products.getProductsInCategory(s.category);
-        const product = list[idx - 1];
-        if (!product) return productListReply(s.category, null, s.cart);
+        const id = parseInt(selected.slice(5), 10);
+        const product = !isNaN(id) ? products.getProductById(id) : null;
+        if (!product || product.category !== s.category) {
+          // A product outside the current shelf (or a stale tap) → treat sensibly
+          if (product) {
+            s.category = product.category;
+            s.selected_key = `${product.category}.${product.item}`;
+            s.state = "qty";
+            return qtyMenuReply(product);
+          }
+          return productListReply(s.category, null, s.cart);
+        }
         if (!product.available || product.stock <= 0) {
           return productListReply(
             s.category,
@@ -700,13 +1030,9 @@ async function handleMessage(from, payload, _saveOrder) {
             s.cart
           );
         }
-        const added = quickAdd(s, product);
-        const imgLine = String(product.image || "").trim() ? `\n🖼 ${String(product.image).trim()}` : "";
-        return productListReply(
-          s.category,
-          `✅ Added: *${product.item}* ×1 (${fmtMoney(product.price)})${imgLine}\nCart subtotal: ${fmtMoney(calcSubtotal(s.cart))}\n\nTap another product or press "Cart & Checkout" when you are done.`,
-          s.cart
-        );
+        s.selected_key = `${product.category}.${product.item}`;
+        s.state = "qty";
+        return qtyMenuReply(product);
       }
       return productListReply(s.category, null, s.cart);
     }
@@ -719,21 +1045,19 @@ async function handleMessage(from, payload, _saveOrder) {
       }
       if (selected === "qty-custom") {
         s.state = "custom_qty";
-        return textReply(`✍️ *Custom Quantity*\n\nType the quantity you need — maximum available: ${product.stock} ${product.unit}.`);
+        return textReply(`✍️ *Custom Quantity*\n\nType the quantity you need — maximum available: ${Math.floor(product.stock)} ${product.unit}.`);
       }
       if (selected && selected.startsWith("qty-")) {
         const q = parseInt(selected.slice(4), 10);
         if (q > 0 && q <= product.stock) {
           return addToCart(s, product, q);
         }
-        return textReply(
-          `Sorry, only *${product.stock}* available.\nPlease choose a smaller quantity.`
-        );
+        return textReply(`Sorry, only *${Math.floor(product.stock)}* available.\nPlease choose a smaller quantity.`);
       }
-      if (!selected && /^\d+$/.test(typed)) {
+      if (!selected && isNumeric) {
         const q = parseInt(typed, 10);
         if (q > 0 && q <= product.stock) return addToCart(s, product, q);
-        return textReply(`Sorry, only ${product.stock} available. Please type a smaller quantity.`);
+        return textReply(`Sorry, only ${Math.floor(product.stock)} available. Please type a smaller quantity.`);
       }
       return qtyMenuReply(product);
     }
@@ -746,12 +1070,10 @@ async function handleMessage(from, payload, _saveOrder) {
       }
       const q = parseInt(typed, 10);
       if (isNaN(q) || q <= 0) {
-        return textReply(`✍️ Please type a number (example: 3). Maximum available: ${product.stock}.`);
+        return textReply(`✍️ Please type a number (example: 3). Maximum available: ${Math.floor(product.stock)}.`);
       }
       if (q > product.stock) {
-        return textReply(
-          `Sorry, only *${product.stock}* in stock. Please type ${product.stock} or less.`
-        );
+        return textReply(`Sorry, only *${Math.floor(product.stock)}* in stock. Please type ${Math.floor(product.stock)} or less.`);
       }
       return addToCart(s, product, q);
     }
@@ -786,25 +1108,25 @@ async function handleMessage(from, payload, _saveOrder) {
       }
       if (selected === "qty-custom") {
         s.state = "custom_qty_change";
-        return textReply(`✍️ *Custom Quantity*\n\nType the new quantity — maximum available: ${product.stock} ${product.unit}.`);
+        return textReply(`✍️ *Custom Quantity*\n\nType the new quantity — maximum available: ${Math.floor(product.stock)} ${product.unit}.`);
       }
       if (selected && selected.startsWith("qty-")) {
         const q = parseInt(selected.slice(4), 10);
         if (q > 0 && q <= product.stock) {
-          applyQtyChange(s, q, product.price);
+          applyQtyChange(s, q, productPrice(product));
           s.state = "cart";
           return cartMenuReply(s);
         }
-        return textReply(`Sorry, only ${product.stock} available.`);
+        return textReply(`Sorry, only ${Math.floor(product.stock)} available.`);
       }
-      if (!selected && /^\d+$/.test(typed)) {
+      if (!selected && isNumeric) {
         const q = parseInt(typed, 10);
         if (q > 0 && q <= product.stock) {
-          applyQtyChange(s, q, product.price);
+          applyQtyChange(s, q, productPrice(product));
           s.state = "cart";
           return cartMenuReply(s);
         }
-        return textReply(`Sorry, only ${product.stock} available.`);
+        return textReply(`Sorry, only ${Math.floor(product.stock)} available.`);
       }
       return qtyEditMenuReply(product, line.qty);
     }
@@ -818,9 +1140,9 @@ async function handleMessage(from, payload, _saveOrder) {
       }
       const q = parseInt(typed, 10);
       if (isNaN(q) || q <= 0 || q > product.stock) {
-        return textReply(`✍️ Please type a valid number (1-${product.stock}):`);
+        return textReply(`✍️ Please type a valid number (1-${Math.floor(product.stock)}):`);
       }
-      applyQtyChange(s, q, product.price);
+      applyQtyChange(s, q, productPrice(product));
       s.state = "cart";
       return cartMenuReply(s);
     }
@@ -828,7 +1150,7 @@ async function handleMessage(from, payload, _saveOrder) {
     case "cart": {
       if (selected === "cart-more") {
         s.state = "category";
-        return categoryMenuReply();
+        return categoryMenuReply(s);
       }
       if (selected === "cart-qty") {
         s.state = "qty_change";
@@ -837,8 +1159,8 @@ async function handleMessage(from, payload, _saveOrder) {
       }
       if (selected === "cart-checkout") {
         if (!s.cart.length) return cartMenuReply(s);
-        s.state = "name";
-        return namePrompt();
+        s.state = "address";
+        return addressPrompt(from);
       }
       if (selected === "cart-edit") {
         s.state = "remove_item";
@@ -869,8 +1191,8 @@ async function handleMessage(from, payload, _saveOrder) {
         return textReply("👤 Please type your full name.\nExample: Selva");
       }
       s.customer_name = name;
-      s.state = "address";
-      return addressPrompt(from);
+      s.state = "payment";
+      return paymentMenuReply();
     }
 
     case "address": {
@@ -881,8 +1203,8 @@ async function handleMessage(from, payload, _saveOrder) {
         s.address = `📍 ${lat},${lng}${label ? " • " + label : ""}`;
         s.lat = lat;
         s.lng = lng;
-        s.state = "payment";
-        return paymentMenuReply();
+        s.state = "name";
+        return namePrompt();
       }
       const address = String(input).trim();
       if (address.toLowerCase() === "saved") {
@@ -891,8 +1213,8 @@ async function handleMessage(from, payload, _saveOrder) {
           s.address = saved;
           s.lat = null;
           s.lng = null;
-          s.state = "payment";
-          return paymentMenuReply();
+          s.state = "name";
+          return namePrompt();
         }
         return addressPrompt(from, true);
       }
@@ -901,8 +1223,69 @@ async function handleMessage(from, payload, _saveOrder) {
       }
       s.address = address;
       savedAddresses[from] = address;
-      s.state = "payment";
-      return paymentMenuReply();
+      s.state = "name";
+      return namePrompt();
+    }
+
+    case "web_location": {
+      const orderNo = s.pending_order;
+      const order = orderNo ? orders.findById(orderNo) : null;
+      if (!order || order.paymentStatus !== "Paid") {
+        resetToWelcome(s);
+        return mainMenuReply();
+      }
+      if (payload && payload.kind === "location") {
+        const lat = payload.latitude;
+        const lng = payload.longitude;
+        const label = [payload.address, payload.name].filter(Boolean).join(", ");
+        db.updateOrder(orderNo, {
+          address: `📍 ${lat},${lng}${label ? " • " + label : ""}`,
+          lat,
+          lng,
+        });
+        s.state = "web_name";
+        return namePrompt();
+      }
+      const address = String(input).trim();
+      if (address.toLowerCase() === "saved") {
+        const saved = savedAddresses[from];
+        if (saved) {
+          db.updateOrder(orderNo, { address: saved, lat: null, lng: null });
+          s.state = "web_name";
+          return namePrompt();
+        }
+        return addressPrompt(from, true);
+      }
+      if (address.length < 5) {
+        return addressPrompt(from, true);
+      }
+      db.updateOrder(orderNo, { address, lat: null, lng: null });
+      savedAddresses[from] = address;
+      s.state = "web_name";
+      return namePrompt();
+    }
+
+    case "web_name": {
+      const orderNo = s.pending_order;
+      const order = orderNo ? orders.findById(orderNo) : null;
+      if (!order || order.paymentStatus !== "Paid") {
+        resetToWelcome(s);
+        return mainMenuReply();
+      }
+      const name = String(input).trim();
+      if (name.length < 2) {
+        return textReply("👤 Please type your full name.\nExample: Selva");
+      }
+      db.updateOrder(orderNo, { name });
+      try {
+        db.upsertCustomer(from, name);
+      } catch (e) {
+        /* keep order-confirm unaffected */
+      }
+      s.customer_name = name;
+      s.state = "welcome";
+      s.pending_order = null;
+      return webConfirmReply(s, from, orders.findById(orderNo));
     }
 
     case "payment": {
@@ -949,9 +1332,6 @@ async function handleMessage(from, payload, _saveOrder) {
     }
 
     case "track": {
-      if (selected === "trk-refresh") {
-        return trackReply(s, from);
-      }
       return trackReply(s, from);
     }
 
@@ -987,46 +1367,29 @@ async function handleMessage(from, payload, _saveOrder) {
 }
 
 function addToCart(s, product, q) {
-  const subtotal = product.price * q;
-  const existing = s.cart.find((c) => c.key === `${product.category}.${product.item}`);
+  const price = productPrice(product);
+  const subtotal = price * q;
+  const key = `${product.category}.${product.item}`;
+  const existing = s.cart.find((c) => c.key === key);
   if (existing) {
     existing.qty += q;
     existing.subtotal = existing.price * existing.qty;
   } else {
     s.cart.push({
-      key: `${product.category}.${product.item}`,
+      key,
       item: product.item,
       unit: product.unit,
       qty: q,
-      price: product.price,
+      price,
       subtotal,
     });
   }
-  s.state = "cart";
-  return cartMenuReply(s);
-}
-
-function onlinePaymentReply(s) {
-  const total = calcSubtotal(s.cart) + deliveryFee();
-  let msg = `💳 *Online Payment*\n\nOrder Amount: ${fmtMoney(total)}\n\n`;
-  const upi = process.env.PAYMENT_UPI_ID;
-  const link = process.env.PAYMENT_LINK;
-  if (link) {
-    msg += `📲 Pay link:\n${link}?amount=${total}&order=${orders.nextOrderNo()}\n\n`;
-  }
-  if (upi) {
-    const tn = encodeURIComponent(`Zipra Order ${orders.nextOrderNo()}`);
-    const am = encodeURIComponent(total);
-    msg += `💸 UPI pay:\nupi://pay?pa=${encodeURIComponent(upi)}&pn=Zipra&am=${am}&tn=${tn}\n\n`;
-    msg += `(Opens in GPay / PhonePe / any UPI app)\n\n`;
-  }
-  msg += "Please complete the payment now, then tap 'Done - Continue'. We will verify the payment before confirming your order - our team checks and confirms it. Thank you! 🙏";
-  return listReply(msg, [
-    { title: "Payment", rows: [
-      { id: "pay|review", title: "Done - Continue", description: "✅ Go to review" },
-      { id: "pay|back", title: "Use Cash on Delivery", description: "⬅️ Switch" },
-    ] },
-  ]);
+  s.state = "product";
+  return productListReply(
+    product.category,
+    `✅ Added: *${product.item}* ×${q} (${fmtMoney(price)})\nCart subtotal: ${fmtMoney(calcSubtotal(s.cart))}\n\nTap another product or press "Cart & Checkout" when you are done.`,
+    s.cart
+  );
 }
 
 async function confirmOrder(s, from) {
@@ -1043,9 +1406,9 @@ async function confirmOrder(s, from) {
       return listReply(
         `❌ Sorry, we don't have enough *${name}* in stock for the requested quantity (${c.qty}).\nPlease edit the cart and try again.`,
         [{ title: "Cart", rows: [
-          { id: "cart|edit", title: "Edit Cart", description: "✏️" },
-          { id: "cart|checkout", title: "Checkout", description: "✅" },
-          { id: "nav|home", title: "Main Menu", description: "🏠" },
+          { id: "cart|edit", title: "✏️ Edit Cart", description: "Fix quantities" },
+          { id: "cart|checkout", title: "✅ Checkout", description: "Retry" },
+          { id: "home|home", title: "🏠 Main Menu", description: "Go home" },
         ] }]
       );
     }
@@ -1076,13 +1439,67 @@ async function confirmOrder(s, from) {
     `💳 ${order.paymentMethod === "online" ? "Online (UPI)" : "Cash on Delivery"}\n\n` +
     `📍 Deliver to:\n${deliveryLine}\n\n` +
     `${statusBar(order.status)} ${orders.STATUS_LABEL[order.status] || "Order Received"}\n\n` +
-    `Track it anytime with 📦 Track Order. We'll keep you updated here — thank you for choosing ZIPRA 🧡`;
+    `Track it anytime with 📦 *Track Order* — or type “track”. Thank you for choosing ZIPRA 🧡`;
 
   return textReply(msg);
 }
 
+/* ------------------------------------------------------------------ */
+/* Web order flow: payment verified in the app → delivery capture     */
+/* ------------------------------------------------------------------ */
+
+function webConfirmReply(s, from, order) {
+  const items = (order.items || [])
+    .map((c) => `${c.item} × ${c.qty} ${c.unit} — ${fmtMoney(c.subtotal)}`)
+    .join("\n");
+  const deliveryLine =
+    order.lat && order.lng
+      ? `https://maps.google.com/maps?q=${order.lat},${order.lng}`
+      : String(order.address || "Shared during checkout").replace(/^📍 /, "");
+  const body =
+    `🛍 *ZIPRA ORDER CONFIRMED*\n\n` +
+    `Order #${order.id}\n\n` +
+    (order.name ? `👤 *Customer:*\n${order.name}\n\n` : "") +
+    `🛒 *Items:*\n${items}\n\n` +
+    `Subtotal: ${fmtMoney(order.subtotal)}\n` +
+    `Delivery: ${fmtMoney(order.deliveryFee)}\n` +
+    `*Total: ${fmtMoney(order.total)}*\n\n` +
+    `📍 *Delivery:*\n${deliveryLine}\n\n` +
+    `💳 *Payment:*\nPaid Online ✅\n\n` +
+    `🟢 *Status:* Order Confirmed\n\n` +
+    `Your order has been received successfully.\nWe'll keep you updated here. 🧡`;
+  return buttonReply(body, [
+    { id: "home|track", title: "📦 Track Order" },
+    { id: "home|home", title: "🏠 Main Menu" },
+  ]);
+}
+
+/* Called by the server once the payment webhook confirms success. */
+function beginWebDeliveryCapture(from, orderNo) {
+  const order = orders.findById(orderNo);
+  const s = getSession(from);
+  touch(s);
+  if (!order || order.paymentStatus !== "Paid") {
+    resetToWelcome(s);
+    return [];
+  }
+  s.pending_order = orderNo;
+  s.cart = [];
+  s.state = "web_location";
+  return [
+    textReply(
+      `✅ *Payment Successful*\n\nPayment of *${fmtMoney(order.total)}* for Order #${order.id} confirmed.\n\nNow let's set up your delivery 🛵`
+    ),
+    addressPrompt(from),
+  ];
+}
+
 function flattenReply(reply) {
   if (reply.type === "text") return reply.text;
+  if (reply.type === "image") return reply.body || "";
+  if (reply.type === "cta") {
+    return (reply.body || "") + " " + (reply.buttons || []).map((b) => b.title + " " + b.url).join(" ");
+  }
   if (reply.type === "buttons") {
     return reply.body + "\n" + reply.buttons.map((b, i) => `${i + 1}. ${b.title}`).join("\n");
   }
@@ -1100,11 +1517,25 @@ function flattenReply(reply) {
 
 function cleanupExpiredSessions() {
   const now = Date.now();
+  const due = [];
   for (const from of Object.keys(stores)) {
     if (now - (stores[from].updated_at || 0) > SESSION_TIMEOUT_MS) {
+      due.push({ from, text: timeoutText() });
       delete stores[from];
     }
   }
+  return due;
 }
 
-module.exports = { handleMessage, flattenReply, sessions: stores, cleanupExpiredSessions };
+module.exports = {
+  handleMessage,
+  flattenReply,
+  sessions: stores,
+  cleanupExpiredSessions,
+  welcomeSequence,
+  welcomeImageUrl,
+  deliveryReviewReply,
+  beginWebDeliveryCapture,
+  webUrl,
+  WEB_APP_URL,
+};

@@ -164,9 +164,27 @@ CREATE TABLE IF NOT EXISTS webhook_msgs(
   msg_id TEXT PRIMARY KEY,
   seen_at TEXT
 );
+CREATE TABLE IF NOT EXISTS reviews(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  order_no TEXT,
+  rating INTEGER,
+  message TEXT,
+  created_at TEXT
+);
 `;
 
 db.exec(SCHEMA);
+
+/* light migrations (idempotent) */
+const ORDER_MIGRATIONS = [
+  ["delivery_otp_hash", "ALTER TABLE orders ADD COLUMN delivery_otp_hash TEXT"],
+  ["delivery_otp_created_at", "ALTER TABLE orders ADD COLUMN delivery_otp_created_at TEXT"],
+  ["delivery_otp_used_at", "ALTER TABLE orders ADD COLUMN delivery_otp_used_at TEXT"],
+];
+for (const [col, sql] of ORDER_MIGRATIONS) {
+  const has = db.prepare("PRAGMA table_info(orders)").all().some((c) => c.name === col);
+  if (!has) db.exec(sql);
+}
 
 function now() {
   return new Date().toISOString();
@@ -624,6 +642,7 @@ function orderFields(o) {
     partnerId: o.assigned_delivery_partner_id,
     partnerName: o.partner_name || null,
     partnerPhone: o.partner_phone || null,
+    deliveryOtpSet: !!o.delivery_otp_hash,
     createdAt: o.created_at,
     updatedAt: o.updated_at,
   };
@@ -760,7 +779,7 @@ function updateOrderStatus(orderNo, status, by) {
   return { ...order, status, paymentStatus: status === "cancelled" ? "Cancelled" : status === "delivered" && order.paymentStatus !== "Paid" ? "Paid" : order.paymentStatus };
 }
 
-function updatePayment(orderNo, paymentStatus, method) {
+function updatePayment(orderNo, paymentStatus, method, txnId) {
   const row = findOrderNo(orderNo);
   if (!row) throw new Error("Order not found: " + orderNo);
   const order = orderFields(row);
@@ -774,9 +793,16 @@ function updatePayment(orderNo, paymentStatus, method) {
         .prepare("SELECT id FROM payments WHERE order_id = ? AND status = 'Paid'")
         .get(row.id);
       if (!hasPay) {
-        db.prepare(
-          "INSERT INTO payments(order_id, amount, method, status, paid_at, created_at) VALUES(?, ?, ?, ?, ?, ?)"
-        ).run(row.id, order.total, method || order.paymentMethod || "cod", "Paid", t, t);
+        // Idempotency key on the provider txn id so duplicate callbacks never
+        // double-record a payment.
+        const hasTxn =
+          txnId &&
+          db.prepare("SELECT id FROM payments WHERE transaction_id = ?").get(txnId);
+        if (!hasTxn) {
+          db.prepare(
+            "INSERT INTO payments(order_id, amount, method, status, transaction_id, paid_at, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)"
+          ).run(row.id, order.total, method || order.paymentMethod || "cod", "Paid", txnId || null, t, t);
+        }
       }
     }
   });
@@ -1088,6 +1114,45 @@ function reportsData() {
   };
 }
 
+/* ---------------- delivery OTP ---------------- */
+
+function setDeliveryOtp(orderNo, hash) {
+  const row = findOrderNo(orderNo);
+  if (!row) return false;
+  db.prepare(
+    "UPDATE orders SET delivery_otp_hash = ?, delivery_otp_created_at = ?, delivery_otp_used_at = NULL, updated_at = ? WHERE order_no = ?"
+  ).run(hash, now(), now(), orderNo);
+  return true;
+}
+function getDeliveryOtpHash(orderNo) {
+  const row = findOrderNo(orderNo);
+  return row && row.delivery_otp_hash ? row.delivery_otp_hash : null;
+}
+function markDeliveryOtpUsed(orderNo) {
+  db.prepare(
+    "UPDATE orders SET delivery_otp_used_at = ?, updated_at = ? WHERE order_no = ?"
+  ).run(now(), now(), orderNo);
+}
+function clearDeliveryOtp(orderNo) {
+  db.prepare(
+    "UPDATE orders SET delivery_otp_hash = NULL, delivery_otp_used_at = NULL, updated_at = ? WHERE order_no = ?"
+  ).run(now(), orderNo);
+}
+
+/* ---------------- reviews ---------------- */
+
+function addReview(orderNo, rating, message) {
+  const r = db
+    .prepare("INSERT INTO reviews(order_no, rating, message, created_at) VALUES(?, ?, ?, ?)")
+    .run(orderNo || "", num(rating, 0), String(message || "").slice(0, 500), now());
+  return r.lastInsertRowid;
+}
+function listReviews(limit) {
+  return db
+    .prepare("SELECT * FROM reviews ORDER BY created_at DESC, id DESC LIMIT ?")
+    .all(limit || 50);
+}
+
 /* ---------------- seed / migration ---------------- */
 
 function seedProducts() {
@@ -1238,11 +1303,18 @@ module.exports = {
   deletePartner,
   listCustomers,
   getCustomerDetail,
+  upsertCustomer,
   upsertCustomerByPhone,
   listPromotions,
   createPromotion,
   updatePromotion,
   deletePromotion,
   reportsData,
+  setDeliveryOtp,
+  getDeliveryOtpHash,
+  markDeliveryOtpUsed,
+  clearDeliveryOtp,
+  addReview,
+  listReviews,
   init,
 };
